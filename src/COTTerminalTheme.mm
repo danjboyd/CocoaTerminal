@@ -10,16 +10,41 @@ static NSColor *COTColorFromHex(unsigned int hex) {
   return [NSColor colorWithCalibratedRed:red green:green blue:blue alpha:1.0];
 }
 
+// On GNUstep, NSFont's point size is interpreted at 72 DPI by default
+// (legacy AppKit behavior). Most X displays report 96 DPI, and other
+// terminals (Alacritty, kitty, gnome-terminal) interpret their `size`
+// values at the display DPI. To keep "size = 13" visually equivalent
+// across our app and those, scale the requested points by the ratio.
+// Override via the COCOATERMINAL_FONT_DPI env var (default: 96).
+static CGFloat COTGNUstepFontScale(void) {
+#if defined(__APPLE__)
+  return 1.0;
+#else
+  static CGFloat cached = 0.0;
+  if (cached == 0.0) {
+    const char *override_ = getenv("COCOATERMINAL_FONT_DPI");
+    double dpi = 96.0;
+    if (override_ != NULL) {
+      double parsed = atof(override_);
+      if (parsed > 0) dpi = parsed;
+    }
+    cached = (CGFloat)(dpi / 72.0);
+  }
+  return cached;
+#endif
+}
+
 static NSFont *COTFontWithFamily(NSString *family, CGFloat size) {
-  NSFont *font = [NSFont fontWithName:family size:size];
+  CGFloat scaled = size * COTGNUstepFontScale();
+  NSFont *font = [NSFont fontWithName:family size:scaled];
   if (font == nil && [family isEqualToString:@"Intel One Mono"]) {
-    font = [NSFont fontWithName:@"IntelOneMono-Regular" size:size];
+    font = [NSFont fontWithName:@"IntelOneMono-Regular" size:scaled];
   }
   if (font == nil) {
-    font = [NSFont userFixedPitchFontOfSize:size];
+    font = [NSFont userFixedPitchFontOfSize:scaled];
   }
   if (font == nil) {
-    font = [NSFont systemFontOfSize:size];
+    font = [NSFont systemFontOfSize:scaled];
   }
   return font;
 }

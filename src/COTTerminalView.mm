@@ -58,7 +58,7 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   if (self) {
     _session = [[COTTerminalSession alloc] initWithConfiguration:configuration];
     [_session setDelegate:self];
-    _baseFontSize = [[[configuration theme] font] pointSize];
+    _baseFontSize = [[configuration theme] fontSize];
     _activeMouseButton = -1;
     [self rebuildTextAttributes];
     [self setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
@@ -76,7 +76,7 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   if (self) {
     _session = [[COTTerminalSession alloc] initWithConfiguration:[COTTerminalConfiguration defaultConfiguration]];
     [_session setDelegate:self];
-    _baseFontSize = [[[[_session configuration] theme] font] pointSize];
+    _baseFontSize = [[[_session configuration] theme] fontSize];
     _activeMouseButton = -1;
     [self rebuildTextAttributes];
     [self setPostsFrameChangedNotifications:YES];

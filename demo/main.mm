@@ -448,25 +448,6 @@ static NSString *COTPythonScenarioScript(NSString *body) {
   }
 #endif
 
-  NSMenu *mainMenu = [[[NSMenu alloc] initWithTitle:@""] autorelease];
-  NSMenuItem *appMenuItem = [[[NSMenuItem alloc] initWithTitle:@"CocoaTerminal" action:NULL keyEquivalent:@""] autorelease];
-  [mainMenu addItem:appMenuItem];
-  NSMenu *appMenu = [[[NSMenu alloc] initWithTitle:@"CocoaTerminal"] autorelease];
-  NSMenuItem *quitItem = [appMenu addItemWithTitle:@"Quit" action:@selector(terminate:) keyEquivalent:@"Q"];
-  [quitItem setKeyEquivalentModifierMask:(NSCommandKeyMask | NSShiftKeyMask)];
-  [appMenuItem setSubmenu:appMenu];
-  NSMenuItem *editMenuItem = [[[NSMenuItem alloc] initWithTitle:@"Edit" action:NULL keyEquivalent:@""] autorelease];
-  [mainMenu addItem:editMenuItem];
-  NSMenu *editMenu = [[[NSMenu alloc] initWithTitle:@"Edit"] autorelease];
-  NSMenuItem *copyItem = [editMenu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"C"];
-  [copyItem setKeyEquivalentModifierMask:(NSCommandKeyMask | NSShiftKeyMask)];
-  NSMenuItem *pasteItem = [editMenu addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"V"];
-  [pasteItem setKeyEquivalentModifierMask:(NSCommandKeyMask | NSShiftKeyMask)];
-  NSMenuItem *selectAllItem = [editMenu addItemWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"A"];
-  [selectAllItem setKeyEquivalentModifierMask:(NSCommandKeyMask | NSShiftKeyMask)];
-  [editMenuItem setSubmenu:editMenu];
-  [NSApp setMainMenu:mainMenu];
-
   NSRect frame = NSMakeRect(100, 100, 900, 560);
   _window = [[NSWindow alloc] initWithContentRect:frame
                                        styleMask:(NSTitledWindowMask | NSClosableWindowMask | NSResizableWindowMask | NSMiniaturizableWindowMask)
@@ -1001,6 +982,10 @@ int main(int argc, const char *argv[]) {
   (void)argv;
 
   NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+  // Suppress GNUstep's floating menu window: inline-menu style with no menu
+  // installed = no menu chrome at all (Alacritty-style minimalism).
+  [[NSUserDefaults standardUserDefaults] setObject:@"NSWindows95InterfaceStyle"
+                                            forKey:@"NSMenuInterfaceStyle"];
   COTDemoOptions *options = [COTDemoOptions optionsFromArguments:[[NSProcessInfo processInfo] arguments]];
   NSApplication *app = [NSApplication sharedApplication];
   COTDemoAppDelegate *delegate = [[COTDemoAppDelegate alloc] initWithOptions:options];

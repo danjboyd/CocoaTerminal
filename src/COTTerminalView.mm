@@ -114,6 +114,27 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
             [[self window] firstResponder] == self ? "self" : "other");
     fflush(stderr);
   }
+
+  // Clipboard shortcuts wired without a menubar (Alacritty-style). Require
+  // Cmd+Shift so we never collide with terminal-control Ctrl+letter byte
+  // translation in keyDown:.
+  NSUInteger flags = [event modifierFlags];
+  if ((flags & NSCommandKeyMask) && (flags & NSShiftKeyMask)) {
+    NSString *base = [[event charactersIgnoringModifiers] lowercaseString];
+    if ([base isEqualToString:@"c"]) {
+      [self copySelection];
+      return YES;
+    }
+    if ([base isEqualToString:@"v"]) {
+      [self pasteFromClipboard];
+      return YES;
+    }
+    if ([base isEqualToString:@"a"]) {
+      [self selectAll];
+      return YES;
+    }
+  }
+
   return [super performKeyEquivalent:event];
 }
 
@@ -508,9 +529,14 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
 - (void)mouseDown:(NSEvent *)event {
   [[self window] makeFirstResponder:self];
   BOOL shift = ([event modifierFlags] & NSShiftKeyMask) != 0;
+  BOOL hadSelection = _hasSelection;
+  _hasSelection = NO;
   if ([_session isMouseReportingEnabled] && !shift) {
     _selectingLocally = NO;
     _activeMouseButton = 0;
+    if (hadSelection) {
+      [self setNeedsDisplay:YES];
+    }
     [self sendMouseReportForEvent:event button:0 pressed:YES];
     return;
   }
@@ -522,7 +548,6 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   _selectionAnchorColumn = column;
   _selectionCurrentRow = row;
   _selectionCurrentColumn = column;
-  _hasSelection = NO;
   [self setNeedsDisplay:YES];
 }
 

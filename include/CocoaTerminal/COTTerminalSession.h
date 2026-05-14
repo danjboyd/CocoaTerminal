@@ -41,6 +41,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)isBracketedPasteEnabled;
 - (BOOL)isFocusReportingEnabled;
 - (NSString *)title;
+- (nullable NSString *)lastClipboardWrite;
+- (NSUInteger)clipboardWriteCount;
 - (NSUInteger)viewportOffset;
 - (NSUInteger)maxViewportOffset;
 - (void)setViewportOffset:(NSUInteger)offset;

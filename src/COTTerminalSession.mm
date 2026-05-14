@@ -49,6 +49,8 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   NSUInteger _rows;
   NSFileHandle *_readHandle;
   BOOL _exitDelivered;
+  NSString *_lastClipboardWrite;
+  NSUInteger _clipboardWriteCount;
 }
 @end
 
@@ -71,6 +73,12 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     });
     _grid->setBellCallback([unsafeSelf]() {
       [unsafeSelf deliverBell];
+    });
+    _grid->setClipboardWriteCallback([unsafeSelf](const std::string &data) {
+      [unsafeSelf deliverClipboardWrite:data];
+    });
+    _grid->setClipboardReadCallback([unsafeSelf]() -> std::string {
+      return [unsafeSelf readClipboardForRemote];
     });
     _masterFd = -1;
     _childPid = -1;
@@ -116,6 +124,49 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   }
 }
 
+- (void)deliverClipboardWrite:(const std::string &)data {
+  NSString *text = [[[NSString alloc] initWithBytes:data.data()
+                                              length:data.size()
+                                            encoding:NSUTF8StringEncoding] autorelease];
+  if (text == nil) {
+    text = @"";
+  }
+  _lastClipboardWrite = [text copy];
+  _clipboardWriteCount += 1;
+  NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+  @try {
+    [pasteboard declareTypes:[NSArray arrayWithObject:NSStringPboardType] owner:nil];
+    [pasteboard setString:text forType:NSStringPboardType];
+  } @catch (NSException *exception) {
+    // Pasteboard server may be unavailable on headless GNUstep; the write
+    // is still observable via lastClipboardWrite.
+    (void)exception;
+  }
+  NSDictionary *userInfo = [NSDictionary dictionaryWithObject:text forKey:@"text"];
+  [[NSNotificationCenter defaultCenter] postNotificationName:@"COTTerminalSessionClipboardDidWriteNotification"
+                                                      object:self
+                                                    userInfo:userInfo];
+}
+
+- (std::string)readClipboardForRemote {
+  NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+  NSString *value = nil;
+  @try {
+    value = [pasteboard stringForType:NSStringPboardType];
+  } @catch (NSException *exception) {
+    (void)exception;
+    value = nil;
+  }
+  if ([value length] == 0) {
+    return std::string();
+  }
+  const char *utf8 = [value UTF8String];
+  if (utf8 == NULL) {
+    return std::string();
+  }
+  return std::string(utf8);
+}
+
 - (instancetype)init {
   return [self initWithConfiguration:[COTTerminalConfiguration defaultConfiguration]];
 }
@@ -124,6 +175,7 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   [self terminate];
   delete _grid;
   [_configuration release];
+  [_lastClipboardWrite release];
   [super dealloc];
 }
 
@@ -465,6 +517,14 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   }
   NSString *value = [[[NSString alloc] initWithBytes:t.data() length:t.size() encoding:NSUTF8StringEncoding] autorelease];
   return value != nil ? value : @"";
+}
+
+- (NSString *)lastClipboardWrite {
+  return _lastClipboardWrite;
+}
+
+- (NSUInteger)clipboardWriteCount {
+  return _clipboardWriteCount;
 }
 
 @synthesize configuration = _configuration;

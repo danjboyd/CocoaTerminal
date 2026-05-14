@@ -54,6 +54,8 @@ public:
   using OutputCallback = std::function<void(const char*, std::size_t)>;
   using TitleCallback = std::function<void(const std::string&)>;
   using BellCallback = std::function<void()>;
+  using ClipboardWriteCallback = std::function<void(const std::string&)>;
+  using ClipboardReadCallback = std::function<std::string()>;
 
   TerminalGrid(std::size_t columns, std::size_t rows);
   ~TerminalGrid();
@@ -65,6 +67,8 @@ public:
   void setOutputCallback(OutputCallback callback);
   void setTitleCallback(TitleCallback callback);
   void setBellCallback(BellCallback callback);
+  void setClipboardWriteCallback(ClipboardWriteCallback callback);
+  void setClipboardReadCallback(ClipboardReadCallback callback);
 
   void resize(std::size_t columns, std::size_t rows);
   void ingest(const char* bytes, std::size_t length);
@@ -135,6 +139,8 @@ private:
   int onScrollbackPop(int cols, void* cells);
   int onScrollbackClear();
   void onOutput(const char* s, std::size_t len);
+  int onSelectionSet(int mask, const void* fragmentPtr);
+  int onSelectionQuery(int mask);
 
   void* vt_ = nullptr;
   void* screenPtr_ = nullptr;
@@ -168,6 +174,10 @@ private:
   OutputCallback outputCallback_;
   TitleCallback titleCallback_;
   BellCallback bellCallback_;
+  ClipboardWriteCallback clipboardWriteCallback_;
+  ClipboardReadCallback clipboardReadCallback_;
+  std::string clipboardAccumulator_;
+  std::vector<char> clipboardBuffer_;
 
   enum class SnoopState { Ground, Escape, Csi };
   SnoopState snoopState_ = SnoopState::Ground;

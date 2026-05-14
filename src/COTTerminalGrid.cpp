@@ -80,6 +80,17 @@ struct GridTrampolines {
   static void output(const char* s, size_t len, void* user) {
     static_cast<TerminalGrid*>(user)->onOutput(s, len);
   }
+  static int selectionSet(VTermSelectionMask mask, VTermStringFragment frag, void* user) {
+    return static_cast<TerminalGrid*>(user)->onSelectionSet(static_cast<int>(mask), &frag);
+  }
+  static int selectionQuery(VTermSelectionMask mask, void* user) {
+    return static_cast<TerminalGrid*>(user)->onSelectionQuery(static_cast<int>(mask));
+  }
+};
+
+static const VTermSelectionCallbacks kSelectionCallbacks = {
+  GridTrampolines::selectionSet,
+  GridTrampolines::selectionQuery,
 };
 
 static const VTermScreenCallbacks kScreenCallbacks = {
@@ -130,6 +141,10 @@ void TerminalGrid::initVTerm() {
 
   vterm_output_set_callback(vt, GridTrampolines::output, this);
 
+  clipboardBuffer_.assign(64 * 1024, 0);
+  vterm_state_set_selection_callbacks(state, &kSelectionCallbacks, this,
+                                      clipboardBuffer_.data(), clipboardBuffer_.size());
+
   vt_ = vt;
   screenPtr_ = screen;
 }
@@ -159,6 +174,14 @@ void TerminalGrid::setTitleCallback(TitleCallback callback) {
 
 void TerminalGrid::setBellCallback(BellCallback callback) {
   bellCallback_ = std::move(callback);
+}
+
+void TerminalGrid::setClipboardWriteCallback(ClipboardWriteCallback callback) {
+  clipboardWriteCallback_ = std::move(callback);
+}
+
+void TerminalGrid::setClipboardReadCallback(ClipboardReadCallback callback) {
+  clipboardReadCallback_ = std::move(callback);
 }
 
 void TerminalGrid::resize(std::size_t columns, std::size_t rows) {
@@ -678,6 +701,39 @@ void TerminalGrid::onOutput(const char* s, std::size_t len) {
   if (outputCallback_) {
     outputCallback_(s, len);
   }
+}
+
+int TerminalGrid::onSelectionSet(int /*mask*/, const void* fragmentPtr) {
+  const VTermStringFragment* frag = static_cast<const VTermStringFragment*>(fragmentPtr);
+  if (frag->initial) {
+    clipboardAccumulator_.clear();
+  }
+  if (frag->len > 0 && frag->str != nullptr) {
+    clipboardAccumulator_.append(frag->str, frag->len);
+  }
+  if (frag->final) {
+    if (clipboardWriteCallback_) {
+      clipboardWriteCallback_(clipboardAccumulator_);
+    }
+    clipboardAccumulator_.clear();
+  }
+  return 1;
+}
+
+int TerminalGrid::onSelectionQuery(int maskRaw) {
+  if (!clipboardReadCallback_) {
+    return 0;
+  }
+  std::string value = clipboardReadCallback_();
+  VTermStringFragment frag;
+  std::memset(&frag, 0, sizeof(frag));
+  frag.str = value.data();
+  frag.len = value.size();
+  frag.initial = true;
+  frag.final = true;
+  VTermState* state = vterm_obtain_state(static_cast<VTerm*>(vt_));
+  vterm_state_send_selection(state, static_cast<VTermSelectionMask>(maskRaw), frag);
+  return 1;
 }
 
 } // namespace cot

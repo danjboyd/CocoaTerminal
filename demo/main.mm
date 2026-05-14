@@ -242,6 +242,15 @@ static NSString *COTPythonScenarioScript(NSString *body) {
                       "sleep 0.1";
     scenario.expectedStatus = @"pass";
     scenario.expectedReason = @"Ctrl-A followed by \" in tmux invokes the bound prefix action";
+  } else if ([name isEqualToString:@"osc52-clipboard"]) {
+    scenario.script = @"printf 'COT_SCENARIO_BEGIN:osc52-clipboard\\r\\n'; "
+                      "payload=$(printf 'TMUX_SELECTION_DATA_42' | base64 -w0); "
+                      "printf '\\033]52;c;%s\\033\\\\' \"$payload\"; "
+                      "printf 'OSC52_SENT\\r\\n'; "
+                      "printf 'COT_SCENARIO_DONE:osc52-clipboard\\r\\n'; "
+                      "sleep 0.2";
+    scenario.expectedStatus = @"pass";
+    scenario.expectedReason = @"OSC 52 (terminal-set-clipboard) decodes and reaches the host clipboard layer";
   } else if ([name isEqualToString:@"menu-shortcut-dispatch"]) {
     scenario.script = @"printf 'COT_SCENARIO_BEGIN:menu-shortcut-dispatch\\r\\n'; "
                       "printf 'CLIPBOARD_FIXTURE_LINE\\r\\n'; "
@@ -306,7 +315,7 @@ static NSString *COTPythonScenarioScript(NSString *body) {
     @"unicode-width", @"scrollback", @"alternate-screen", @"keyboard-input", @"mouse-reporting",
     @"tmux-mouse-resize", @"tmux", @"readline-editing", @"fullscreen-app-baseline", @"line-drawing-inverse", @"vim",
     @"resize", @"resize-fullscreen-app", @"ctrl-letter-bytes", @"cmd-letter-bytes-gnustep",
-    @"tmux-ctrl-a-split", @"menu-shortcut-dispatch", nil];
+    @"tmux-ctrl-a-split", @"menu-shortcut-dispatch", @"osc52-clipboard", nil];
 }
 
 - (void)dealloc {
@@ -951,6 +960,9 @@ static NSString *COTPythonScenarioScript(NSString *body) {
   NSString *selectedText = [_terminalView selectedText] ?: @"";
   NSString *selectedTrim = [selectedText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
   [state appendFormat:@"selected_text=%@\n", [selectedTrim length] > 0 ? selectedTrim : @"<none>"];
+  NSString *lastClip = [[_terminalView session] lastClipboardWrite] ?: @"<none>";
+  [state appendFormat:@"clipboard_last_write=%@\n", lastClip];
+  [state appendFormat:@"clipboard_write_count=%lu\n", (unsigned long)[[_terminalView session] clipboardWriteCount]];
 
   [state appendString:@"visible_lines_begin\n"];
   for (NSString *line in [[_terminalView session] visibleLines]) {

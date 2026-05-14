@@ -7,7 +7,7 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 build_dir="$repo_dir/build"
 artifact_dir="${COCOATERMINAL_SCENARIO_DIR:-/tmp/coterminal-scenarios}"
 
-required_scenarios="smoke cursor cursor-block zoom-shortcuts exit-closes-demo terminal-env delete-editing mouse-no-leak ansi-colors unicode-width scrollback alternate-screen keyboard-input mouse-reporting tmux-mouse-resize tmux readline-editing fullscreen-app-baseline line-drawing-inverse vim resize resize-fullscreen-app ctrl-letter-bytes cmd-letter-bytes-gnustep tmux-ctrl-a-split menu-shortcut-dispatch"
+required_scenarios="smoke cursor cursor-block zoom-shortcuts exit-closes-demo terminal-env delete-editing mouse-no-leak ansi-colors unicode-width scrollback alternate-screen keyboard-input mouse-reporting tmux-mouse-resize tmux readline-editing fullscreen-app-baseline line-drawing-inverse vim resize resize-fullscreen-app ctrl-letter-bytes cmd-letter-bytes-gnustep tmux-ctrl-a-split menu-shortcut-dispatch osc52-clipboard"
 
 cmake -S "$repo_dir" -B "$build_dir" -G Ninja
 cmake --build "$build_dir"
@@ -155,6 +155,10 @@ run_scenario() {
     menu-shortcut-dispatch)
       grep -q "^selected_text=COT_SCENARIO_BEGIN:menu-shortcut-dispatch" "$state_path"
       grep -q "last_input_actions=dispatchCmdShiftKey a" "$state_path"
+      ;;
+    osc52-clipboard)
+      grep -q "^clipboard_last_write=TMUX_SELECTION_DATA_42" "$state_path"
+      grep -q "^clipboard_write_count=1" "$state_path"
       ;;
   esac
 

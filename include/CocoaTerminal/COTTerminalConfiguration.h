@@ -23,6 +23,7 @@ typedef NS_ENUM(NSInteger, COTTerminalExitBehavior) {
 
 @property (nonatomic, copy) NSArray<NSString *> *shellCommand;
 @property (nonatomic, copy) NSDictionary<NSString *, NSString *> *environment;
+@property (nonatomic, copy) NSString *workingDirectory;
 @property (nonatomic, copy) NSString *terminalType;
 @property (nonatomic, retain) COTTerminalTheme *theme;
 @property (nonatomic, retain) NSFont *font;

@@ -10,6 +10,8 @@
 #include <math.h>
 
 static NSString *const COTTerminalViewErrorDomain = @"COTTerminalViewErrorDomain";
+NSString *const COTTerminalViewDidExitNotification = @"COTTerminalViewDidExitNotification";
+NSString *const COTTerminalExitStatusUserInfoKey = @"status";
 
 static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTerminalTheme *theme, BOOL foreground) {
   switch (color.kind) {
@@ -955,7 +957,10 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
 
 - (void)terminalSession:(COTTerminalSession *)session didExitWithStatus:(int)status {
   (void)session;
-  (void)status;
+  [[NSNotificationCenter defaultCenter] postNotificationName:COTTerminalViewDidExitNotification
+                                                      object:self
+                                                    userInfo:[NSDictionary dictionaryWithObject:[NSNumber numberWithInt:status]
+                                                                                         forKey:COTTerminalExitStatusUserInfoKey]];
   COTTerminalExitBehavior behavior = [[_session configuration] exitBehavior];
   if (behavior == COTTerminalExitBehaviorCloseOwningWindow) {
     [[self window] close];

@@ -223,6 +223,11 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     }
     setenv("COLORTERM", "truecolor", 1);
 
+    if ([_configuration.workingDirectory length] > 0 &&
+        chdir([_configuration.workingDirectory fileSystemRepresentation]) != 0) {
+      _exit(126);
+    }
+
     NSArray<NSString *> *command = _configuration.shellCommand;
     NSString *launchPath = [command count] > 0 ? [command objectAtIndex:0] : @"/bin/sh";
     NSUInteger argc = [command count];

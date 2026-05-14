@@ -8,6 +8,9 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+extern NSString *const COTTerminalViewDidExitNotification;
+extern NSString *const COTTerminalExitStatusUserInfoKey;
+
 @interface COTTerminalView : NSView <COTTerminalDelegate>
 
 @property (nonatomic, readonly, retain) COTTerminalSession *session;

@@ -32,6 +32,7 @@
     [environment setObject:_terminalType forKey:@"TERM"];
     [environment setObject:@"truecolor" forKey:@"COLORTERM"];
     _environment = [environment copy];
+    _workingDirectory = [NSHomeDirectory() copy];
     _theme = [[COTTerminalTheme defaultTheme] retain];
     _scrollbackLineLimit = 10000;
     _keyboardCapturePolicy = COTKeyboardCapturePolicyTerminalDefault;
@@ -44,6 +45,7 @@
   COTTerminalConfiguration *copy = [[[self class] allocWithZone:zone] init];
   copy.shellCommand = self.shellCommand;
   copy.environment = self.environment;
+  copy.workingDirectory = self.workingDirectory;
   copy.terminalType = self.terminalType;
   copy.theme = [[self.theme copy] autorelease];
   copy.scrollbackLineLimit = self.scrollbackLineLimit;
@@ -96,6 +98,7 @@
 - (void)dealloc {
   [_shellCommand release];
   [_environment release];
+  [_workingDirectory release];
   [_terminalType release];
   [_theme release];
   [super dealloc];
@@ -103,6 +106,7 @@
 
 @synthesize shellCommand = _shellCommand;
 @synthesize environment = _environment;
+@synthesize workingDirectory = _workingDirectory;
 @synthesize terminalType = _terminalType;
 @synthesize theme = _theme;
 @synthesize scrollbackLineLimit = _scrollbackLineLimit;

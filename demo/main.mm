@@ -242,6 +242,13 @@ static NSString *COTPythonScenarioScript(NSString *body) {
                       "sleep 0.1";
     scenario.expectedStatus = @"pass";
     scenario.expectedReason = @"Ctrl-A followed by \" in tmux invokes the bound prefix action";
+  } else if ([name isEqualToString:@"menu-shortcut-dispatch"]) {
+    scenario.script = @"printf 'COT_SCENARIO_BEGIN:menu-shortcut-dispatch\\r\\n'; "
+                      "printf 'CLIPBOARD_FIXTURE_LINE\\r\\n'; "
+                      "printf 'COT_SCENARIO_DONE:menu-shortcut-dispatch\\r\\n'; "
+                      "sleep 0.4";
+    scenario.expectedStatus = @"pass";
+    scenario.expectedReason = @"Cmd-Shift-A dispatched through [NSApp sendEvent:] reaches view's selectAll: action";
   } else if ([name isEqualToString:@"cmd-letter-bytes-gnustep"]) {
     scenario.script = @"stty -icanon -isig -echo time 0 min 2; "
                       "printf 'COT_SCENARIO_BEGIN:cmd-letter-bytes-gnustep\\r\\nCOT_READY:cmd-letter-bytes-gnustep\\r\\n'; "
@@ -298,7 +305,8 @@ static NSString *COTPythonScenarioScript(NSString *body) {
     @"exit-closes-demo", @"terminal-env", @"delete-editing", @"mouse-no-leak", @"ansi-colors",
     @"unicode-width", @"scrollback", @"alternate-screen", @"keyboard-input", @"mouse-reporting",
     @"tmux-mouse-resize", @"tmux", @"readline-editing", @"fullscreen-app-baseline", @"line-drawing-inverse", @"vim",
-    @"resize", @"resize-fullscreen-app", @"ctrl-letter-bytes", @"cmd-letter-bytes-gnustep", @"tmux-ctrl-a-split", nil];
+    @"resize", @"resize-fullscreen-app", @"ctrl-letter-bytes", @"cmd-letter-bytes-gnustep",
+    @"tmux-ctrl-a-split", @"menu-shortcut-dispatch", nil];
 }
 
 - (void)dealloc {
@@ -619,6 +627,12 @@ static NSString *COTPythonScenarioScript(NSString *body) {
     _syntheticActionsRan = YES;
     [self runInputAction:@"dispatchCtrlKey a"];
     [self runInputAction:@"dispatchCtrlKey c"];
+  } else if ([[_scenario name] isEqualToString:@"menu-shortcut-dispatch"]) {
+    if (![self visibleLinesContain:@"CLIPBOARD_FIXTURE_LINE"]) {
+      return;
+    }
+    _syntheticActionsRan = YES;
+    [self runInputAction:@"dispatchCmdShiftKey a"];
   } else if ([[_scenario name] isEqualToString:@"cmd-letter-bytes-gnustep"]) {
     if (![self visibleLinesContain:@"COT_READY:cmd-letter-bytes-gnustep"]) {
       return;
@@ -712,6 +726,24 @@ static NSString *COTPythonScenarioScript(NSString *body) {
       NSEvent *event = [NSEvent keyEventWithType:NSKeyDown
                                         location:NSZeroPoint
                                    modifierFlags:NSCommandKeyMask
+                                       timestamp:0
+                                    windowNumber:[_window windowNumber]
+                                         context:nil
+                                      characters:letter
+                     charactersIgnoringModifiers:letter
+                                       isARepeat:NO
+                                         keyCode:0];
+      [NSApp sendEvent:event];
+    }
+    return;
+  }
+  if ([action hasPrefix:@"dispatchCmdShiftKey "]) {
+    NSString *suffix = [action substringFromIndex:[@"dispatchCmdShiftKey " length]];
+    if ([suffix length] > 0) {
+      NSString *letter = [[suffix substringToIndex:1] uppercaseString];
+      NSEvent *event = [NSEvent keyEventWithType:NSKeyDown
+                                        location:NSZeroPoint
+                                   modifierFlags:(NSCommandKeyMask | NSShiftKeyMask)
                                        timestamp:0
                                     windowNumber:[_window windowNumber]
                                          context:nil
@@ -934,6 +966,10 @@ static NSString *COTPythonScenarioScript(NSString *body) {
   [state appendFormat:@"zoom_after_in=%.1f\n", _zoomAfterInSize];
   [state appendFormat:@"zoom_after_out=%.1f\n", _zoomAfterOutSize];
   [state appendFormat:@"zoom_after_reset=%.1f\n", _zoomAfterResetSize];
+
+  NSString *selectedText = [_terminalView selectedText] ?: @"";
+  NSString *selectedTrim = [selectedText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  [state appendFormat:@"selected_text=%@\n", [selectedTrim length] > 0 ? selectedTrim : @"<none>"];
 
   [state appendString:@"visible_lines_begin\n"];
   for (NSString *line in [[_terminalView session] visibleLines]) {

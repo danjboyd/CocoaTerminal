@@ -584,6 +584,35 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   }
 }
 
+// Standard NSResponder action methods so menu items and key-equivalent
+// dispatch (which targets @selector(copy:), @selector(paste:),
+// @selector(selectAll:)) actually reach this view.
+- (void)copy:(id)sender {
+  (void)sender;
+  [self copySelection];
+}
+
+- (void)paste:(id)sender {
+  (void)sender;
+  [self pasteFromClipboard];
+}
+
+- (void)selectAll:(id)sender {
+  (void)sender;
+  [self selectAll];
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem *)item {
+  SEL action = [item action];
+  if (action == @selector(copy:)) {
+    return _hasSelection;
+  }
+  if (action == @selector(paste:) || action == @selector(selectAll:)) {
+    return YES;
+  }
+  return YES;
+}
+
 - (void)selectAll {
   _selectionAnchorRow = 0;
   _selectionAnchorColumn = 0;

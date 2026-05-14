@@ -1,0 +1,30 @@
+# CocoaTerminalDemo configuration. Copy to one of:
+#   ~/.config/cocoaterminal/config.toml
+#   $XDG_CONFIG_HOME/cocoaterminal/config.toml
+#   path/of/your/choice and export COCOATERMINAL_CONFIG=/abs/path
+#
+# If neither of the first two exist, the demo also reads
+# ~/.config/alacritty/alacritty.toml for the keys we understand
+# (font.size, font.normal.family, colors.primary.*, colors.cursor.cursor,
+# window.opacity, scrolling.history, shell.program/args).
+
+[font]
+size = 13.0
+normal.family = "Intel One Mono"
+
+# [shell]
+# program = "/usr/bin/tmux"
+# args = []
+
+# [colors.primary]
+# foreground = "#e6e1dc"
+# background = "#181818"
+
+# [colors.cursor]
+# cursor = "#79c7c5"
+
+# [window]
+# opacity = 1.0
+
+# [scrolling]
+# history = 10000

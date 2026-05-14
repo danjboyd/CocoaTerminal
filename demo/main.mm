@@ -3,6 +3,8 @@
 
 #import <CocoaTerminal/CocoaTerminal.h>
 
+#import "COTConfigLoader.h"
+
 #include <math.h>
 
 static NSString *const COTScenarioDefault = @"smoke";
@@ -242,6 +244,12 @@ static NSString *COTPythonScenarioScript(NSString *body) {
                       "sleep 0.1";
     scenario.expectedStatus = @"pass";
     scenario.expectedReason = @"Ctrl-A followed by \" in tmux invokes the bound prefix action";
+  } else if ([name isEqualToString:@"config-toml"]) {
+    scenario.script = @"printf 'COT_SCENARIO_BEGIN:config-toml\\r\\n'; "
+                      "printf 'COT_SCENARIO_DONE:config-toml\\r\\n'; "
+                      "sleep 0.1";
+    scenario.expectedStatus = @"pass";
+    scenario.expectedReason = @"TOML config loader applies font/colors/scrollback to the configuration";
   } else if ([name isEqualToString:@"osc52-clipboard"]) {
     scenario.script = @"printf 'COT_SCENARIO_BEGIN:osc52-clipboard\\r\\n'; "
                       "payload=$(printf 'TMUX_SELECTION_DATA_42' | base64 -w0); "
@@ -315,7 +323,7 @@ static NSString *COTPythonScenarioScript(NSString *body) {
     @"unicode-width", @"scrollback", @"alternate-screen", @"keyboard-input", @"mouse-reporting",
     @"tmux-mouse-resize", @"tmux", @"readline-editing", @"fullscreen-app-baseline", @"line-drawing-inverse", @"vim",
     @"resize", @"resize-fullscreen-app", @"ctrl-letter-bytes", @"cmd-letter-bytes-gnustep",
-    @"tmux-ctrl-a-split", @"menu-shortcut-dispatch", @"osc52-clipboard", nil];
+    @"tmux-ctrl-a-split", @"menu-shortcut-dispatch", @"osc52-clipboard", @"config-toml", nil];
 }
 
 - (void)dealloc {
@@ -464,6 +472,27 @@ static NSString *COTPythonScenarioScript(NSString *body) {
                                            defer:NO];
 
   COTTerminalConfiguration *configuration = [COTTerminalConfiguration defaultConfiguration];
+
+  {
+    NSString *configPath = nil;
+    if ([_options selfTest]) {
+      // Self-test runs must be deterministic; only honour an explicit
+      // override via the env var.
+      configPath = [[[NSProcessInfo processInfo] environment] objectForKey:@"COCOATERMINAL_CONFIG"];
+    } else {
+      configPath = [COTConfigLoader defaultConfigPath];
+    }
+    if ([configPath length] > 0 && [[NSFileManager defaultManager] fileExistsAtPath:configPath]) {
+      NSDictionary *parsed = [COTConfigLoader loadFromPath:configPath];
+      if (parsed != nil) {
+        [COTConfigLoader applyConfig:parsed toConfiguration:configuration];
+        if (![_options selfTest]) {
+          NSLog(@"CocoaTerminalDemo: loaded config from %@", configPath);
+        }
+      }
+    }
+  }
+
   if ([_options selfTest]) {
     _scenario = [[COTDemoScenario scenarioNamed:[_options scenarioName]] retain];
     if (_scenario == nil) {

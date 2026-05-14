@@ -7,7 +7,7 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 build_dir="$repo_dir/build"
 artifact_dir="${COCOATERMINAL_SCENARIO_DIR:-/tmp/coterminal-scenarios}"
 
-required_scenarios="smoke cursor cursor-block zoom-shortcuts exit-closes-demo terminal-env delete-editing mouse-no-leak ansi-colors unicode-width scrollback alternate-screen keyboard-input mouse-reporting tmux-mouse-resize tmux readline-editing fullscreen-app-baseline line-drawing-inverse vim resize resize-fullscreen-app ctrl-letter-bytes cmd-letter-bytes-gnustep tmux-ctrl-a-split menu-shortcut-dispatch osc52-clipboard"
+required_scenarios="smoke cursor cursor-block zoom-shortcuts exit-closes-demo terminal-env delete-editing mouse-no-leak ansi-colors unicode-width scrollback alternate-screen keyboard-input mouse-reporting tmux-mouse-resize tmux readline-editing fullscreen-app-baseline line-drawing-inverse vim resize resize-fullscreen-app ctrl-letter-bytes cmd-letter-bytes-gnustep tmux-ctrl-a-split menu-shortcut-dispatch osc52-clipboard config-toml"
 
 cmake -S "$repo_dir" -B "$build_dir" -G Ninja
 cmake --build "$build_dir"
@@ -22,12 +22,43 @@ run_scenario() {
   screenshot_path="$artifact_dir/$scenario.png"
   state_path="$artifact_dir/$scenario.txt"
 
-  "$build_dir/CocoaTerminalDemo" \
-    --self-test \
-    --scenario "$scenario" \
-    --screenshot "$screenshot_path" \
-    --state "$state_path" \
-    --exit-after-capture
+  case "$scenario" in
+    config-toml)
+      cat > "$artifact_dir/config-toml.fixture.toml" <<'TOMLEOF'
+[font]
+size = 17.0
+normal.family = "DejaVu Sans Mono"
+
+[colors.primary]
+foreground = "#abcdef"
+background = "#101010"
+
+[colors.cursor]
+cursor = "#ff00ff"
+
+[window]
+opacity = 0.85
+
+[scrolling]
+history = 4242
+TOMLEOF
+      COCOATERMINAL_CONFIG="$artifact_dir/config-toml.fixture.toml" \
+        "$build_dir/CocoaTerminalDemo" \
+          --self-test \
+          --scenario "$scenario" \
+          --screenshot "$screenshot_path" \
+          --state "$state_path" \
+          --exit-after-capture
+      ;;
+    *)
+      "$build_dir/CocoaTerminalDemo" \
+        --self-test \
+        --scenario "$scenario" \
+        --screenshot "$screenshot_path" \
+        --state "$state_path" \
+        --exit-after-capture
+      ;;
+  esac
 
   test -s "$screenshot_path"
   test -s "$state_path"
@@ -159,6 +190,14 @@ run_scenario() {
     osc52-clipboard)
       grep -q "^clipboard_last_write=TMUX_SELECTION_DATA_42" "$state_path"
       grep -q "^clipboard_write_count=1" "$state_path"
+      ;;
+    config-toml)
+      grep -q "^font_family=DejaVu Sans Mono" "$state_path"
+      grep -q "^font_size=17.0" "$state_path"
+      grep -q "^foreground_color=#ABCDEF" "$state_path"
+      grep -q "^background_color=#101010" "$state_path"
+      grep -q "^cursor_color=#FF00FF" "$state_path"
+      grep -q "^opacity=0.85" "$state_path"
       ;;
   esac
 

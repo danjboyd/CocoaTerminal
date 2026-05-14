@@ -14,6 +14,45 @@ ctest --test-dir build
 
 On this machine, GNUstep is installed under `/usr/GNUstep` and `gnustep-config` is available at `/usr/GNUstep/System/Tools/gnustep-config`.
 
+## Demo Configuration
+
+`CocoaTerminalDemo` reads an optional TOML config file using Alacritty's
+schema for the keys we support. Search order:
+
+1. `$COCOATERMINAL_CONFIG` if set
+2. `$XDG_CONFIG_HOME/cocoaterminal/config.toml` (or `~/.config/cocoaterminal/config.toml`)
+3. `~/.config/alacritty/alacritty.toml` (fallback — your existing Alacritty file works)
+
+Supported keys:
+
+```toml
+[font]
+size = 13.0
+normal.family = "Intel One Mono"
+
+[shell]
+program = "/usr/bin/tmux"
+args = []
+
+[colors.primary]
+foreground = "#e6e1dc"
+background = "#181818"
+
+[colors.cursor]
+cursor = "#79c7c5"
+
+[window]
+opacity = 1.0
+
+[scrolling]
+history = 10000
+```
+
+`terminal.shell.program` / `terminal.shell.args` (newer Alacritty schema)
+are also accepted. Unknown keys are ignored. See
+[`demo/config.example.toml`](demo/config.example.toml) for an annotated
+starter file.
+
 ## Demo Test Harness
 
 The demo app can test the library through the full GUI path and write its own screenshots.

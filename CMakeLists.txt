@@ -77,7 +77,7 @@ install(DIRECTORY include/CocoaTerminal
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 if(COCOATERMINAL_BUILD_DEMO)
-  add_executable(CocoaTerminalDemo demo/main.mm)
+  add_executable(CocoaTerminalDemo demo/main.mm demo/COTConfigLoader.mm)
   set_target_properties(CocoaTerminalDemo PROPERTIES LINKER_LANGUAGE OBJCXX)
   target_link_libraries(CocoaTerminalDemo PRIVATE CocoaTerminal::CocoaTerminal)
 endif()

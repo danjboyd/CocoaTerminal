@@ -124,10 +124,14 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   if (!notify) {
     return;
   }
+  COTTerminalSession *session = [self retain];
   dispatch_async(dispatch_get_main_queue(), ^{
-    if ([_delegate respondsToSelector:@selector(terminalSessionDidUpdateScreen:)]) {
-      [_delegate terminalSessionDidUpdateScreen:self];
+    id<COTTerminalDelegate> delegate = [[session delegate] retain];
+    if ([delegate respondsToSelector:@selector(terminalSessionDidUpdateScreen:)]) {
+      [delegate terminalSessionDidUpdateScreen:session];
     }
+    [delegate release];
+    [session release];
   });
 }
 
@@ -198,23 +202,31 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     value = @"";
   }
   NSString *ownedValue = [value copy];
+  COTTerminalSession *session = [self retain];
   dispatch_async(dispatch_get_main_queue(), ^{
-    if ([_delegate respondsToSelector:@selector(terminalSession:didChangeTitle:)]) {
-      [_delegate terminalSession:self didChangeTitle:ownedValue];
+    id<COTTerminalDelegate> delegate = [[session delegate] retain];
+    if ([delegate respondsToSelector:@selector(terminalSession:didChangeTitle:)]) {
+      [delegate terminalSession:session didChangeTitle:ownedValue];
     }
     NSDictionary *userInfo = [NSDictionary dictionaryWithObject:ownedValue forKey:@"title"];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"COTTerminalSessionTitleDidChangeNotification"
-                                                        object:self
+                                                        object:session
                                                       userInfo:userInfo];
+    [delegate release];
     [ownedValue release];
+    [session release];
   });
 }
 
 - (void)deliverBell {
+  COTTerminalSession *session = [self retain];
   dispatch_async(dispatch_get_main_queue(), ^{
-    if ([_delegate respondsToSelector:@selector(terminalSessionDidRequestBell:)]) {
-      [_delegate terminalSessionDidRequestBell:self];
+    id<COTTerminalDelegate> delegate = [[session delegate] retain];
+    if ([delegate respondsToSelector:@selector(terminalSessionDidRequestBell:)]) {
+      [delegate terminalSessionDidRequestBell:session];
     }
+    [delegate release];
+    [session release];
   });
 }
 

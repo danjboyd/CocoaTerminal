@@ -82,6 +82,15 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
 
 @implementation COTTerminalView
 
+- (void)setFrame:(NSRect)frameRect {
+  NSRect frame = frameRect;
+  frame.origin.x = isfinite(frame.origin.x) ? frame.origin.x : 0.0;
+  frame.origin.y = isfinite(frame.origin.y) ? frame.origin.y : 0.0;
+  frame.size.width = isfinite(frame.size.width) ? MAX(1.0, frame.size.width) : 1.0;
+  frame.size.height = isfinite(frame.size.height) ? MAX(1.0, frame.size.height) : 1.0;
+  [super setFrame:frame];
+}
+
 - (instancetype)initWithFrame:(NSRect)frameRect {
   return [self initWithFrame:frameRect configuration:[COTTerminalConfiguration defaultConfiguration]];
 }
@@ -124,6 +133,7 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
 - (void)dealloc {
   [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performPendingTerminalSizeUpdate) object:nil];
   [[NSNotificationCenter defaultCenter] removeObserver:self];
+  [_session setDelegate:nil];
   [_session release];
   [_textAttributes release];
   [super dealloc];
@@ -147,6 +157,10 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
             [chars UTF8String],
             [[self window] firstResponder] == self ? "self" : "other");
     fflush(stderr);
+  }
+
+  if ([self sendTerminalControlBytesForEvent:event debug:debugKeys]) {
+    return YES;
   }
 
   // Clipboard shortcuts wired without a menubar (Alacritty-style). Require
@@ -472,67 +486,18 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
     return;
   }
 
-  NSUInteger flags = [event modifierFlags];
-  BOOL hasCtrl = (flags & NSControlKeyMask) != 0;
-  BOOL hasCmd = (flags & NSCommandKeyMask) != 0;
-  BOOL hasShift = (flags & NSShiftKeyMask) != 0;
-  BOOL hasAlt = (flags & NSAlternateKeyMask) != 0;
-
   // Treat Cmd as Ctrl-equivalent for terminal control bytes. On GNUstep on Linux,
   // the physical Ctrl key is commonly mapped to NSCommandKeyMask; on macOS it maps
   // to NSControlKeyMask. Either way, bare modifier+letter (no Shift) means a
   // terminal control byte. Shift-modified variants are reserved for app shortcuts.
-  if ((hasCtrl || hasCmd) && !hasShift) {
-    unichar first = [characters characterAtIndex:0];
-    if (first >= 0x01 && first <= 0x1f) {
-      if (debugKeys) {
-        fprintf(stderr, "[COT keyDown]   -> characters already control byte 0x%02x\n", (unsigned)first);
-        fflush(stderr);
-      }
-    } else {
-      NSString *base = [event charactersIgnoringModifiers];
-      unichar effective = [base length] > 0 ? [base characterAtIndex:0] : first;
-      unsigned char control = 0;
-      BOOL translated = NO;
-      if (effective >= 'a' && effective <= 'z') {
-        control = (unsigned char)(effective - 'a' + 1);
-        translated = YES;
-      } else if (effective >= 'A' && effective <= 'Z') {
-        control = (unsigned char)(effective - 'A' + 1);
-        translated = YES;
-      } else if (effective == ' ' || effective == '2' || effective == '@') {
-        control = 0x00;
-        translated = YES;
-      } else if (effective == '[' || effective == '3') {
-        control = 0x1b;
-        translated = YES;
-      } else if (effective == '\\' || effective == '4') {
-        control = 0x1c;
-        translated = YES;
-      } else if (effective == ']' || effective == '5') {
-        control = 0x1d;
-        translated = YES;
-      } else if (effective == '^' || effective == '6') {
-        control = 0x1e;
-        translated = YES;
-      } else if (effective == '_' || effective == '7' || effective == '/' || effective == '?') {
-        control = 0x1f;
-        translated = YES;
-      }
-      if (translated) {
-        if (hasAlt) {
-          unsigned char esc = 0x1b;
-          [_session sendInput:[NSData dataWithBytes:&esc length:1]];
-        }
-        [_session sendInput:[NSData dataWithBytes:&control length:1]];
-        if (debugKeys) {
-          fprintf(stderr, "[COT keyDown]   -> translated to control byte 0x%02x\n", control);
-          fflush(stderr);
-        }
-        return;
-      }
-    }
+  if ([self sendTerminalControlBytesForEvent:event debug:debugKeys]) {
+    return;
   }
+
+  NSUInteger flags = [event modifierFlags];
+  BOOL hasCtrl = (flags & NSControlKeyMask) != 0;
+  BOOL hasCmd = (flags & NSCommandKeyMask) != 0;
+  BOOL hasAlt = (flags & NSAlternateKeyMask) != 0;
 
   if (hasAlt && !hasCmd && !hasCtrl && [characters length] > 0) {
     NSMutableData *data = [NSMutableData dataWithCapacity:1 + [characters length]];
@@ -801,6 +766,75 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   (void)notification;
   [self scheduleTerminalSizeUpdate];
   [self setNeedsDisplay:YES];
+}
+
+- (BOOL)sendTerminalControlBytesForEvent:(NSEvent *)event debug:(BOOL)debugKeys {
+  NSString *characters = [event characters];
+  NSUInteger flags = [event modifierFlags];
+  BOOL hasCtrl = (flags & NSControlKeyMask) != 0;
+  BOOL hasCmd = (flags & NSCommandKeyMask) != 0;
+  BOOL hasShift = (flags & NSShiftKeyMask) != 0;
+  BOOL hasAlt = (flags & NSAlternateKeyMask) != 0;
+
+  if (!(hasCtrl || hasCmd) || hasShift || [characters length] == 0) {
+    return NO;
+  }
+
+  unichar first = [characters characterAtIndex:0];
+  if (first >= 0x01 && first <= 0x1f) {
+    unsigned char control = (unsigned char)first;
+    [_session sendInput:[NSData dataWithBytes:&control length:1]];
+    if (debugKeys) {
+      fprintf(stderr, "[COT key]   -> sent existing control byte 0x%02x\n", control);
+      fflush(stderr);
+    }
+    return YES;
+  }
+
+  NSString *base = [event charactersIgnoringModifiers];
+  unichar effective = [base length] > 0 ? [base characterAtIndex:0] : first;
+  unsigned char control = 0;
+  BOOL translated = NO;
+  if (effective >= 'a' && effective <= 'z') {
+    control = (unsigned char)(effective - 'a' + 1);
+    translated = YES;
+  } else if (effective >= 'A' && effective <= 'Z') {
+    control = (unsigned char)(effective - 'A' + 1);
+    translated = YES;
+  } else if (effective == ' ' || effective == '2' || effective == '@') {
+    control = 0x00;
+    translated = YES;
+  } else if (effective == '[' || effective == '3') {
+    control = 0x1b;
+    translated = YES;
+  } else if (effective == '\\' || effective == '4') {
+    control = 0x1c;
+    translated = YES;
+  } else if (effective == ']' || effective == '5') {
+    control = 0x1d;
+    translated = YES;
+  } else if (effective == '^' || effective == '6') {
+    control = 0x1e;
+    translated = YES;
+  } else if (effective == '_' || effective == '7' || effective == '/' || effective == '?') {
+    control = 0x1f;
+    translated = YES;
+  }
+
+  if (!translated) {
+    return NO;
+  }
+
+  if (hasAlt) {
+    unsigned char esc = 0x1b;
+    [_session sendInput:[NSData dataWithBytes:&esc length:1]];
+  }
+  [_session sendInput:[NSData dataWithBytes:&control length:1]];
+  if (debugKeys) {
+    fprintf(stderr, "[COT key]   -> translated to control byte 0x%02x\n", control);
+    fflush(stderr);
+  }
+  return YES;
 }
 
 - (BOOL)handleClipboardShortcut:(NSEvent *)event {

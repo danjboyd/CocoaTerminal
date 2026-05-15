@@ -146,7 +146,7 @@ TOMLEOF
       grep -q "observed_alternate_screen=true" "$state_path"
       ;;
     readline-editing)
-      grep -q "readline_result=abXc" "$state_path"
+      grep -q "readline_result=previous-command" "$state_path"
       ;;
     fullscreen-app-baseline)
       grep -q "observed_alternate_screen=true" "$state_path"

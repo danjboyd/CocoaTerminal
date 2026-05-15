@@ -184,7 +184,7 @@ static NSString *COTPythonScenarioScript(NSString *body) {
     scenario.expectedReason = @"real tmux in the embedded PTY is covered";
   } else if ([name isEqualToString:@"readline-editing"]) {
     scenario.script = @"printf 'COT_SCENARIO_BEGIN:readline-editing\\r\\n'; "
-                      "bash --noprofile --norc -c 'read -e line; printf \"readline-result=%s\\r\\n\" \"$line\"'; "
+                      "bash --noprofile --norc -c 'history -s previous-command; read -e line; printf \"readline-result=%s\\r\\n\" \"$line\"'; "
                       "printf 'COT_SCENARIO_DONE:readline-editing\\r\\n'; "
                       "sleep 0.1";
     scenario.expectedStatus = @"pass";
@@ -576,7 +576,7 @@ static NSString *COTPythonScenarioScript(NSString *body) {
     _sawTmuxInteractivePass = [self visibleLinesContain:@"tmux-interactive-pass"];
   }
   if (!_sawReadlineResult) {
-    _sawReadlineResult = [self visibleLinesContain:@"readline-result=abXc"];
+    _sawReadlineResult = [self visibleLinesContain:@"readline-result=previous-command"];
   }
 
   BOOL timedOut = [[NSDate date] compare:_scenarioDeadline] == NSOrderedDescending;
@@ -628,9 +628,7 @@ static NSString *COTPythonScenarioScript(NSString *body) {
       return;
     }
     _syntheticActionsRan = YES;
-    [self runInputAction:@"sendText abc"];
-    [self runInputAction:@"sendKey left"];
-    [self runInputAction:@"sendText X"];
+    [self runInputAction:@"sendKey up"];
     [self runInputAction:@"sendKey enter"];
   } else if ([[_scenario name] isEqualToString:@"ctrl-letter-bytes"]) {
     if (![self visibleLinesContain:@"COT_READY:ctrl-letter-bytes"]) {
@@ -784,10 +782,62 @@ static NSString *COTPythonScenarioScript(NSString *body) {
     [[_terminalView session] sendInput:[NSData dataWithBytes:&byte length:1]];
   } else if ([action isEqualToString:@"sendKey delete"]) {
     [[_terminalView session] sendInput:[@"\033[3~" dataUsingEncoding:NSUTF8StringEncoding]];
+  } else if ([action isEqualToString:@"sendKey up"]) {
+    unichar key = NSUpArrowFunctionKey;
+    NSString *characters = [NSString stringWithCharacters:&key length:1];
+    NSEvent *event = [NSEvent keyEventWithType:NSKeyDown
+                                      location:NSZeroPoint
+                                 modifierFlags:0
+                                     timestamp:0
+                                  windowNumber:[_window windowNumber]
+                                       context:nil
+                                    characters:characters
+                   charactersIgnoringModifiers:characters
+                                     isARepeat:NO
+                                       keyCode:126];
+    [_terminalView keyDown:event];
+  } else if ([action isEqualToString:@"sendKey down"]) {
+    unichar key = NSDownArrowFunctionKey;
+    NSString *characters = [NSString stringWithCharacters:&key length:1];
+    NSEvent *event = [NSEvent keyEventWithType:NSKeyDown
+                                      location:NSZeroPoint
+                                 modifierFlags:0
+                                     timestamp:0
+                                  windowNumber:[_window windowNumber]
+                                       context:nil
+                                    characters:characters
+                   charactersIgnoringModifiers:characters
+                                     isARepeat:NO
+                                       keyCode:125];
+    [_terminalView keyDown:event];
   } else if ([action isEqualToString:@"sendKey left"]) {
-    [[_terminalView session] sendInput:[@"\033[D" dataUsingEncoding:NSUTF8StringEncoding]];
+    unichar key = NSLeftArrowFunctionKey;
+    NSString *characters = [NSString stringWithCharacters:&key length:1];
+    NSEvent *event = [NSEvent keyEventWithType:NSKeyDown
+                                      location:NSZeroPoint
+                                 modifierFlags:0
+                                     timestamp:0
+                                  windowNumber:[_window windowNumber]
+                                       context:nil
+                                    characters:characters
+                   charactersIgnoringModifiers:characters
+                                     isARepeat:NO
+                                       keyCode:123];
+    [_terminalView keyDown:event];
   } else if ([action isEqualToString:@"sendKey right"]) {
-    [[_terminalView session] sendInput:[@"\033[C" dataUsingEncoding:NSUTF8StringEncoding]];
+    unichar key = NSRightArrowFunctionKey;
+    NSString *characters = [NSString stringWithCharacters:&key length:1];
+    NSEvent *event = [NSEvent keyEventWithType:NSKeyDown
+                                      location:NSZeroPoint
+                                 modifierFlags:0
+                                     timestamp:0
+                                  windowNumber:[_window windowNumber]
+                                       context:nil
+                                    characters:characters
+                   charactersIgnoringModifiers:characters
+                                     isARepeat:NO
+                                       keyCode:124];
+    [_terminalView keyDown:event];
   } else if ([action isEqualToString:@"sendShortcut ctrl+="]) {
     NSEvent *event = [NSEvent keyEventWithType:NSKeyDown
                                       location:NSZeroPoint
@@ -959,7 +1009,7 @@ static NSString *COTPythonScenarioScript(NSString *body) {
   [state appendFormat:@"term_value=%@\n", [self visibleLineValueWithPrefix:@"TERM_VALUE="]];
   [state appendFormat:@"colorterm_value=%@\n", [self visibleLineValueWithPrefix:@"COLORTERM_VALUE="]];
   [state appendFormat:@"tmux_interactive_pass=%@\n", _sawTmuxInteractivePass ? @"true" : @"false"];
-  [state appendFormat:@"readline_result=%@\n", _sawReadlineResult ? @"abXc" : @"<none>"];
+  [state appendFormat:@"readline_result=%@\n", _sawReadlineResult ? @"previous-command" : @"<none>"];
   [state appendFormat:@"resize_before_columns=%lu\n", (unsigned long)_resizeBeforeColumns];
   [state appendFormat:@"resize_before_rows=%lu\n", (unsigned long)_resizeBeforeRows];
   [state appendFormat:@"resize_after_columns=%lu\n", (unsigned long)_resizeAfterColumns];

@@ -13,6 +13,34 @@ static NSString *const COTTerminalViewErrorDomain = @"COTTerminalViewErrorDomain
 NSString *const COTTerminalViewDidExitNotification = @"COTTerminalViewDidExitNotification";
 NSString *const COTTerminalExitStatusUserInfoKey = @"status";
 
+static NSString *COTSequenceForFunctionKey(unichar key) {
+  switch (key) {
+  case NSUpArrowFunctionKey:
+    return @"\033[A";
+  case NSDownArrowFunctionKey:
+    return @"\033[B";
+  case NSRightArrowFunctionKey:
+    return @"\033[C";
+  case NSLeftArrowFunctionKey:
+    return @"\033[D";
+  case NSHomeFunctionKey:
+    return @"\033[H";
+  case NSEndFunctionKey:
+    return @"\033[F";
+  case NSPageUpFunctionKey:
+    return @"\033[5~";
+  case NSPageDownFunctionKey:
+    return @"\033[6~";
+  case NSInsertFunctionKey:
+    return @"\033[2~";
+  case NSDeleteFunctionKey:
+  case NSDeleteCharFunctionKey:
+    return @"\033[3~";
+  default:
+    return nil;
+  }
+}
+
 static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTerminalTheme *theme, BOOL foreground) {
   switch (color.kind) {
   case cot::TerminalColor::Kind::Palette: {
@@ -402,37 +430,44 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   }
 
   NSString *characters = [event characters];
+  NSString *baseCharacters = [event charactersIgnoringModifiers];
   NSString *sequence = nil;
+  if ([baseCharacters length] > 0) {
+    sequence = COTSequenceForFunctionKey([baseCharacters characterAtIndex:0]);
+  }
+  if (sequence == nil && [characters length] > 0) {
+    sequence = COTSequenceForFunctionKey([characters characterAtIndex:0]);
+  }
   switch ([event keyCode]) {
   case 123:
-    sequence = @"\033[D";
+    if (sequence == nil) { sequence = @"\033[D"; }
     break;
   case 124:
-    sequence = @"\033[C";
+    if (sequence == nil) { sequence = @"\033[C"; }
     break;
   case 125:
-    sequence = @"\033[B";
+    if (sequence == nil) { sequence = @"\033[B"; }
     break;
   case 126:
-    sequence = @"\033[A";
+    if (sequence == nil) { sequence = @"\033[A"; }
     break;
   case 115:
-    sequence = @"\033[H";
+    if (sequence == nil) { sequence = @"\033[H"; }
     break;
   case 119:
-    sequence = @"\033[F";
+    if (sequence == nil) { sequence = @"\033[F"; }
     break;
   case 116:
-    sequence = @"\033[5~";
+    if (sequence == nil) { sequence = @"\033[5~"; }
     break;
   case 121:
-    sequence = @"\033[6~";
+    if (sequence == nil) { sequence = @"\033[6~"; }
     break;
   case 51:
-    sequence = @"\177";
+    if (sequence == nil) { sequence = @"\177"; }
     break;
   case 117:
-    sequence = @"\033[3~";
+    if (sequence == nil) { sequence = @"\033[3~"; }
     break;
   default:
     break;

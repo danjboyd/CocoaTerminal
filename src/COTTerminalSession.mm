@@ -20,6 +20,8 @@
 #endif
 
 static NSString *const COTTerminalErrorDomain = @"COTTerminalErrorDomain";
+static NSUInteger const COTTerminalMaximumColumns = 1000;
+static NSUInteger const COTTerminalMaximumRows = 1000;
 
 static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   if (color.kind == cot::TerminalColor::Kind::Default) {
@@ -349,8 +351,8 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 }
 
 - (void)resizeToColumns:(NSUInteger)columns rows:(NSUInteger)rows {
-  _columns = MAX(columns, 1);
-  _rows = MAX(rows, 1);
+  _columns = MIN(MAX(columns, 1), COTTerminalMaximumColumns);
+  _rows = MIN(MAX(rows, 1), COTTerminalMaximumRows);
   _grid->resize(_columns, _rows);
 
 #if !defined(_WIN32)

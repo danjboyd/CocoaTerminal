@@ -13,6 +13,9 @@ namespace cot {
 
 namespace {
 
+constexpr std::size_t kMaximumTerminalColumns = 1000;
+constexpr std::size_t kMaximumTerminalRows = 1000;
+
 void appendUtf8(std::string& out, uint32_t codepoint) {
   if (codepoint <= 0x7f) {
     out.push_back(static_cast<char>(codepoint));
@@ -185,8 +188,11 @@ void TerminalGrid::setClipboardReadCallback(ClipboardReadCallback callback) {
 }
 
 void TerminalGrid::resize(std::size_t columns, std::size_t rows) {
-  std::size_t newCols = std::max<std::size_t>(columns, 1);
-  std::size_t newRows = std::max<std::size_t>(rows, 1);
+  if (vt_ == nullptr) {
+    return;
+  }
+  std::size_t newCols = std::min(std::max<std::size_t>(columns, 1), kMaximumTerminalColumns);
+  std::size_t newRows = std::min(std::max<std::size_t>(rows, 1), kMaximumTerminalRows);
   if (newCols == columns_ && newRows == rows_) {
     return;
   }

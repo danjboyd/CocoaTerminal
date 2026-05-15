@@ -12,6 +12,8 @@
 static NSString *const COTTerminalViewErrorDomain = @"COTTerminalViewErrorDomain";
 NSString *const COTTerminalViewDidExitNotification = @"COTTerminalViewDidExitNotification";
 NSString *const COTTerminalExitStatusUserInfoKey = @"status";
+static NSUInteger const COTTerminalMaximumColumns = 1000;
+static NSUInteger const COTTerminalMaximumRows = 1000;
 
 static NSString *COTSequenceForFunctionKey(unichar key) {
   switch (key) {
@@ -74,6 +76,7 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   NSInteger _selectionCurrentRow;
   NSInteger _selectionCurrentColumn;
   BOOL _selectingLocally;
+  BOOL _terminalSizeUpdateScheduled;
 }
 @end
 
@@ -119,6 +122,7 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
 }
 
 - (void)dealloc {
+  [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performPendingTerminalSizeUpdate) object:nil];
   [[NSNotificationCenter defaultCenter] removeObserver:self];
   [_session release];
   [_textAttributes release];
@@ -806,12 +810,12 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
 
 - (void)setFrameSize:(NSSize)newSize {
   [super setFrameSize:newSize];
-  [self updateTerminalSizeFromBounds];
+  [self scheduleTerminalSizeUpdate];
 }
 
 - (void)viewFrameDidChange:(NSNotification *)notification {
   (void)notification;
-  [self updateTerminalSizeFromBounds];
+  [self scheduleTerminalSizeUpdate];
   [self setNeedsDisplay:YES];
 }
 
@@ -933,13 +937,36 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   CGFloat lineHeight = _lineHeight > 0 ? _lineHeight : MAX([[theme font] ascender] - [[theme font] descender] + [theme lineSpacing], 1.0);
   NSEdgeInsets insets = [theme contentInsets];
   NSRect bounds = [self bounds];
-  CGFloat usableWidth = MAX(bounds.size.width - insets.left - insets.right, cellWidth);
-  CGFloat usableHeight = MAX(bounds.size.height - insets.top - insets.bottom, lineHeight);
-  NSUInteger columns = MAX((NSUInteger)floor(usableWidth / cellWidth), 1);
-  NSUInteger rows = MAX((NSUInteger)floor(usableHeight / lineHeight), 1);
+  if (!isfinite(bounds.size.width) || !isfinite(bounds.size.height) ||
+      !isfinite(cellWidth) || !isfinite(lineHeight) ||
+      bounds.size.width <= 0.0 || bounds.size.height <= 0.0 ||
+      cellWidth <= 0.0 || lineHeight <= 0.0) {
+    return;
+  }
+  CGFloat usableWidth = bounds.size.width - insets.left - insets.right;
+  CGFloat usableHeight = bounds.size.height - insets.top - insets.bottom;
+  if (!isfinite(usableWidth) || !isfinite(usableHeight) ||
+      usableWidth < cellWidth || usableHeight < lineHeight) {
+    return;
+  }
+  NSUInteger columns = MIN(MAX((NSUInteger)floor(usableWidth / cellWidth), 1), COTTerminalMaximumColumns);
+  NSUInteger rows = MIN(MAX((NSUInteger)floor(usableHeight / lineHeight), 1), COTTerminalMaximumRows);
   if (columns != [_session columns] || rows != [_session rows]) {
     [_session resizeToColumns:columns rows:rows];
   }
+}
+
+- (void)scheduleTerminalSizeUpdate {
+  if (_terminalSizeUpdateScheduled) {
+    return;
+  }
+  _terminalSizeUpdateScheduled = YES;
+  [self performSelector:@selector(performPendingTerminalSizeUpdate) withObject:nil afterDelay:0.0];
+}
+
+- (void)performPendingTerminalSizeUpdate {
+  _terminalSizeUpdateScheduled = NO;
+  [self updateTerminalSizeFromBounds];
 }
 
 - (void)setZoomFontSize:(CGFloat)fontSize {
@@ -950,7 +977,7 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   }
   [theme setFontSize:clamped];
   [self rebuildTextAttributes];
-  [self updateTerminalSizeFromBounds];
+  [self scheduleTerminalSizeUpdate];
   [self setNeedsDisplay:YES];
 }
 

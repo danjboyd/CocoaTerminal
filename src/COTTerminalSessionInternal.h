@@ -9,9 +9,36 @@
 
 #include <vector>
 
+@interface COTTerminalSnapshot : NSObject {
+@public
+  std::vector<std::vector<cot::TerminalCell>> cells;
+  std::vector<std::string> lines;
+  NSUInteger columns;
+  NSUInteger rows;
+  NSUInteger cursorColumn;
+  NSUInteger cursorRow;
+  BOOL cursorVisible;
+  BOOL usingAlternateScreen;
+  BOOL hasUsedAlternateScreen;
+  BOOL hasColorSpans;
+  BOOL hasUnicode;
+  BOOL mouseReportingEnabled;
+  BOOL mouseButtonMotionReportingEnabled;
+  BOOL mouseAnyMotionReportingEnabled;
+  BOOL sgrMouseModeEnabled;
+  BOOL alternateScrollModeEnabled;
+  BOOL bracketedPasteEnabled;
+  BOOL focusReportingEnabled;
+  NSUInteger scrollbackLineCount;
+  NSUInteger viewportOffset;
+  NSUInteger maxViewportOffset;
+  NSString *title;
+}
+@end
+
 @interface COTTerminalSession (Internal)
 
-- (const cot::TerminalGrid *)gridPointer;
+- (COTTerminalSnapshot *)currentSnapshot;
 - (NSArray<NSNumber *> *)takeDirtyRows;
 
 @end

@@ -241,19 +241,11 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   [backgroundColor setFill];
   NSRectFill(dirtyRect);
 
-  const cot::TerminalGrid *grid = [_session gridPointer];
-  if (grid == NULL) {
+  COTTerminalSnapshot *snapshot = [_session currentSnapshot];
+  if (snapshot == nil) {
     return;
   }
-  std::vector<std::vector<cot::TerminalCell>> ownedRows;
-  const std::vector<std::vector<cot::TerminalCell>> *rowsPtr = NULL;
-  if ([_session viewportOffset] == 0) {
-    rowsPtr = &grid->visibleCells();
-  } else {
-    ownedRows = grid->viewportCells();
-    rowsPtr = &ownedRows;
-  }
-  const std::vector<std::vector<cot::TerminalCell>> &rows = *rowsPtr;
+  const std::vector<std::vector<cot::TerminalCell>> &rows = snapshot->cells;
 
   NSEdgeInsets insets = [theme contentInsets];
   NSFont *font = [theme font];
@@ -347,19 +339,11 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
     }
   }
 
-  if ([_session viewportOffset] == 0 && [[self window] firstResponder] == self && [_session isCursorVisible]) {
-    CGFloat cursorX = insets.left + (CGFloat)[_session cursorColumn] * cellWidth;
-    CGFloat cursorY = firstBaselineY - (CGFloat)[_session cursorRow] * lineHeight;
+  if (snapshot->viewportOffset == 0 && [[self window] firstResponder] == self && snapshot->cursorVisible) {
+    CGFloat cursorX = insets.left + (CGFloat)snapshot->cursorColumn * cellWidth;
+    CGFloat cursorY = firstBaselineY - (CGFloat)snapshot->cursorRow * lineHeight;
     NSRect cursorRect = NSMakeRect(cursorX, cursorY, cellWidth, lineHeight);
     COTTerminalCursorStyle style = [theme cursorStyle];
-    cot::TerminalCursorShape pty = grid->cursorShape();
-    if (pty == cot::TerminalCursorShape::Bar) {
-      style = COTTerminalCursorStyleBeam;
-    } else if (pty == cot::TerminalCursorShape::Underline) {
-      style = COTTerminalCursorStyleUnderline;
-    } else if (pty == cot::TerminalCursorShape::Block) {
-      // honor theme choice when libvterm reports default block
-    }
     if (style == COTTerminalCursorStyleBeam) {
       [[theme cursorColor] setFill];
       NSRectFill(NSMakeRect(cursorX, cursorY, 2.0, lineHeight));
@@ -369,11 +353,11 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
     } else {
       [[theme cursorColor] setFill];
       NSRectFill(cursorRect);
-      NSUInteger cursorRow = [_session cursorRow];
-      NSUInteger cursorColumn = [_session cursorColumn];
+      NSUInteger cursorRow = snapshot->cursorRow;
+      NSUInteger cursorColumn = snapshot->cursorColumn;
       NSString *cursorText = @" ";
-      if (cursorRow < grid->rows() && cursorColumn < grid->columns()) {
-        const cot::TerminalCell &cell = grid->visibleCells()[cursorRow][cursorColumn];
+      if (cursorRow < rows.size() && cursorColumn < rows[cursorRow].size()) {
+        const cot::TerminalCell &cell = rows[cursorRow][cursorColumn];
         if (!cell.continuation && !cell.text.empty()) {
           NSString *temp = [[NSString alloc] initWithBytes:cell.text.data()
                                                     length:cell.text.size()
@@ -997,24 +981,7 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
 
 - (void)terminalSessionDidUpdateScreen:(COTTerminalSession *)session {
   (void)session;
-  if (_lineHeight <= 0 || _cellWidth <= 0 || [_session viewportOffset] > 0) {
-    [self setNeedsDisplay:YES];
-    return;
-  }
-  NSArray<NSNumber *> *dirty = [_session takeDirtyRows];
-  if ([dirty count] == 0) {
-    return;
-  }
-  COTTerminalTheme *theme = [[_session configuration] theme];
-  NSEdgeInsets insets = [theme contentInsets];
-  CGFloat top = NSMaxY([self bounds]) - insets.top;
-  CGFloat width = NSWidth([self bounds]);
-  for (NSNumber *index in dirty) {
-    NSInteger row = [index integerValue];
-    NSRect rect = NSMakeRect(0, top - (row + 1) * _lineHeight, width, _lineHeight);
-    [self setNeedsDisplayInRect:rect];
-  }
-  [self setNeedsDisplayInRect:NSMakeRect(0, top - ([_session cursorRow] + 1) * _lineHeight, width, _lineHeight)];
+  [self setNeedsDisplay:YES];
 }
 
 - (void)terminalSession:(COTTerminalSession *)session didExitWithStatus:(int)status {

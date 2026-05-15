@@ -8,6 +8,8 @@
 
 #include "COTTerminalGrid.h"
 
+#import <dispatch/dispatch.h>
+
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/ioctl.h>
@@ -22,6 +24,15 @@
 static NSString *const COTTerminalErrorDomain = @"COTTerminalErrorDomain";
 static NSUInteger const COTTerminalMaximumColumns = 1000;
 static NSUInteger const COTTerminalMaximumRows = 1000;
+
+@implementation COTTerminalSnapshot
+
+- (void)dealloc {
+  [title release];
+  [super dealloc];
+}
+
+@end
 
 static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   if (color.kind == cot::TerminalColor::Kind::Default) {
@@ -53,10 +64,82 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   BOOL _exitDelivered;
   NSString *_lastClipboardWrite;
   NSUInteger _clipboardWriteCount;
+  dispatch_queue_t _terminalQueue;
+  NSLock *_snapshotLock;
+  COTTerminalSnapshot *_snapshot;
+  BOOL _resizeOperationScheduled;
+  NSUInteger _pendingColumns;
+  NSUInteger _pendingRows;
 }
 @end
 
 @implementation COTTerminalSession
+
+- (COTTerminalSnapshot *)snapshotFromGrid {
+  COTTerminalSnapshot *snapshot = [[COTTerminalSnapshot alloc] init];
+  snapshot->columns = _grid->columns();
+  snapshot->rows = _grid->rows();
+  snapshot->cursorColumn = _grid->cursorColumn();
+  snapshot->cursorRow = _grid->cursorRow();
+  snapshot->cursorVisible = _grid->cursorVisible();
+  snapshot->usingAlternateScreen = _grid->usingAlternateScreen();
+  snapshot->hasUsedAlternateScreen = _grid->hasUsedAlternateScreen();
+  snapshot->hasColorSpans = _grid->hasColorSpans();
+  snapshot->hasUnicode = _grid->hasUnicode();
+  snapshot->mouseReportingEnabled = _grid->mouseReportingEnabled();
+  snapshot->mouseButtonMotionReportingEnabled = _grid->mouseButtonMotionReportingEnabled();
+  snapshot->mouseAnyMotionReportingEnabled = _grid->mouseAnyMotionReportingEnabled();
+  snapshot->sgrMouseModeEnabled = _grid->sgrMouseModeEnabled();
+  snapshot->alternateScrollModeEnabled = _grid->alternateScrollModeEnabled();
+  snapshot->bracketedPasteEnabled = _grid->bracketedPasteEnabled();
+  snapshot->focusReportingEnabled = _grid->focusReportingEnabled();
+  snapshot->scrollbackLineCount = _grid->scrollbackLineCount();
+  snapshot->viewportOffset = _grid->viewportOffset();
+  snapshot->maxViewportOffset = _grid->maxViewportOffset();
+  if (_grid->viewportOffset() == 0) {
+    snapshot->cells = _grid->visibleCells();
+    snapshot->lines = _grid->visibleLines();
+  } else {
+    snapshot->cells = _grid->viewportCells();
+    snapshot->lines = _grid->viewportLines();
+  }
+  std::string title = _grid->title();
+  if (!title.empty()) {
+    snapshot->title = [[NSString alloc] initWithBytes:title.data()
+                                              length:title.size()
+                                            encoding:NSUTF8StringEncoding];
+  }
+  if (snapshot->title == nil) {
+    snapshot->title = [@"" copy];
+  }
+  return [snapshot autorelease];
+}
+
+- (void)publishSnapshotAndNotify:(BOOL)notify {
+  COTTerminalSnapshot *snapshot = [[self snapshotFromGrid] retain];
+  [_snapshotLock lock];
+  [_snapshot release];
+  _snapshot = snapshot;
+  [_snapshotLock unlock];
+  if (!notify) {
+    return;
+  }
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if ([_delegate respondsToSelector:@selector(terminalSessionDidUpdateScreen:)]) {
+      [_delegate terminalSessionDidUpdateScreen:self];
+    }
+  });
+}
+
+- (void)performGridMutation:(dispatch_block_t)block notify:(BOOL)notify {
+  dispatch_async(_terminalQueue, ^{
+    if (_grid == NULL) {
+      return;
+    }
+    block();
+    [self publishSnapshotAndNotify:notify];
+  });
+}
 
 - (instancetype)initWithConfiguration:(COTTerminalConfiguration *)configuration {
   self = [super init];
@@ -85,6 +168,9 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     _masterFd = -1;
     _childPid = -1;
     _running = NO;
+    _terminalQueue = dispatch_queue_create("org.cocoaterminal.session", DISPATCH_QUEUE_SERIAL);
+    _snapshotLock = [[NSLock alloc] init];
+    [self publishSnapshotAndNotify:NO];
   }
   return self;
 }
@@ -111,19 +197,25 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   if (value == nil) {
     value = @"";
   }
-  if ([_delegate respondsToSelector:@selector(terminalSession:didChangeTitle:)]) {
-    [_delegate terminalSession:self didChangeTitle:value];
-  }
-  NSDictionary *userInfo = [NSDictionary dictionaryWithObject:value forKey:@"title"];
-  [[NSNotificationCenter defaultCenter] postNotificationName:@"COTTerminalSessionTitleDidChangeNotification"
-                                                      object:self
-                                                    userInfo:userInfo];
+  NSString *ownedValue = [value copy];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if ([_delegate respondsToSelector:@selector(terminalSession:didChangeTitle:)]) {
+      [_delegate terminalSession:self didChangeTitle:ownedValue];
+    }
+    NSDictionary *userInfo = [NSDictionary dictionaryWithObject:ownedValue forKey:@"title"];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"COTTerminalSessionTitleDidChangeNotification"
+                                                        object:self
+                                                      userInfo:userInfo];
+    [ownedValue release];
+  });
 }
 
 - (void)deliverBell {
-  if ([_delegate respondsToSelector:@selector(terminalSessionDidRequestBell:)]) {
-    [_delegate terminalSessionDidRequestBell:self];
-  }
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if ([_delegate respondsToSelector:@selector(terminalSessionDidRequestBell:)]) {
+      [_delegate terminalSessionDidRequestBell:self];
+    }
+  });
 }
 
 - (void)deliverClipboardWrite:(const std::string &)data {
@@ -175,8 +267,13 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 
 - (void)dealloc {
   [self terminate];
-  delete _grid;
+  dispatch_sync(_terminalQueue, ^{
+    delete _grid;
+    _grid = NULL;
+  });
   [_configuration release];
+  [_snapshotLock release];
+  [_snapshot release];
   [_lastClipboardWrite release];
   [super dealloc];
 }
@@ -263,10 +360,11 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     [self deliverChildExit];
     return;
   }
-  _grid->ingest((const char *)[data bytes], (std::size_t)[data length]);
-  if ([_delegate respondsToSelector:@selector(terminalSessionDidUpdateScreen:)]) {
-    [_delegate terminalSessionDidUpdateScreen:self];
-  }
+  NSData *ownedData = [data copy];
+  [self performGridMutation:^{
+    _grid->ingest((const char *)[ownedData bytes], (std::size_t)[ownedData length]);
+    [ownedData release];
+  } notify:YES];
   if (_readHandle != nil) {
     [_readHandle readInBackgroundAndNotify];
   }
@@ -324,7 +422,11 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   for (;;) {
     ssize_t count = read(_masterFd, buffer, sizeof(buffer));
     if (count > 0) {
-      _grid->ingest(buffer, (std::size_t)count);
+      NSData *ownedData = [[NSData alloc] initWithBytes:buffer length:(NSUInteger)count];
+      [self performGridMutation:^{
+        _grid->ingest((const char *)[ownedData bytes], (std::size_t)[ownedData length]);
+        [ownedData release];
+      } notify:YES];
       changed = true;
       continue;
     }
@@ -337,9 +439,7 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     }
     break;
   }
-  if (changed && [_delegate respondsToSelector:@selector(terminalSessionDidUpdateScreen:)]) {
-    [_delegate terminalSessionDidUpdateScreen:self];
-  }
+  (void)changed;
   if (_childPid > 0) {
     int status = 0;
     pid_t result = waitpid(_childPid, &status, WNOHANG);
@@ -351,31 +451,63 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 }
 
 - (void)resizeToColumns:(NSUInteger)columns rows:(NSUInteger)rows {
-  _columns = MIN(MAX(columns, 1), COTTerminalMaximumColumns);
-  _rows = MIN(MAX(rows, 1), COTTerminalMaximumRows);
-  _grid->resize(_columns, _rows);
+  NSUInteger targetColumns = MIN(MAX(columns, 1), COTTerminalMaximumColumns);
+  NSUInteger targetRows = MIN(MAX(rows, 1), COTTerminalMaximumRows);
+  _columns = targetColumns;
+  _rows = targetRows;
+  @synchronized (self) {
+    _pendingColumns = targetColumns;
+    _pendingRows = targetRows;
+    if (_resizeOperationScheduled) {
+      return;
+    }
+    _resizeOperationScheduled = YES;
+  }
+  dispatch_async(_terminalQueue, ^{
+    for (;;) {
+      NSUInteger resizeColumns = 0;
+      NSUInteger resizeRows = 0;
+      @synchronized (self) {
+        resizeColumns = _pendingColumns;
+        resizeRows = _pendingRows;
+      }
+      if (_grid == NULL) {
+        @synchronized (self) {
+          _resizeOperationScheduled = NO;
+        }
+        return;
+      }
+      _grid->resize(resizeColumns, resizeRows);
 
 #if !defined(_WIN32)
-  if (_masterFd >= 0) {
-    struct winsize size;
-    size.ws_col = (unsigned short)_columns;
-    size.ws_row = (unsigned short)_rows;
-    size.ws_xpixel = 0;
-    size.ws_ypixel = 0;
-    ioctl(_masterFd, TIOCSWINSZ, &size);
-  }
+      if (_masterFd >= 0) {
+        struct winsize size;
+        size.ws_col = (unsigned short)resizeColumns;
+        size.ws_row = (unsigned short)resizeRows;
+        size.ws_xpixel = 0;
+        size.ws_ypixel = 0;
+        ioctl(_masterFd, TIOCSWINSZ, &size);
+      }
 #endif
+      [self publishSnapshotAndNotify:YES];
+      @synchronized (self) {
+        if (_pendingColumns == resizeColumns && _pendingRows == resizeRows) {
+          _resizeOperationScheduled = NO;
+          return;
+        }
+      }
+    }
+  });
 }
 
 - (void)sendInput:(NSData *)data {
 #if !defined(_WIN32)
   if (_masterFd >= 0 && [data length] > 0) {
     (void)write(_masterFd, [data bytes], [data length]);
-    if (_grid->viewportOffset() > 0) {
-      _grid->scrollToBottom();
-      if ([_delegate respondsToSelector:@selector(terminalSessionDidUpdateScreen:)]) {
-        [_delegate terminalSessionDidUpdateScreen:self];
-      }
+    if ([self viewportOffset] > 0) {
+      [self performGridMutation:^{
+        _grid->scrollToBottom();
+      } notify:YES];
     }
   }
 #else
@@ -384,7 +516,8 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 }
 
 - (NSArray<NSString *> *)visibleLines {
-  std::vector<std::string> source = _grid->viewportLines();
+  COTTerminalSnapshot *snapshot = [self currentSnapshot];
+  std::vector<std::string> source = snapshot->lines;
   NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithCapacity:source.size()];
   for (const std::string &line : source) {
     NSString *string = [[[NSString alloc] initWithBytes:line.data()
@@ -396,7 +529,8 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 }
 
 - (NSArray<NSArray<NSDictionary *> *> *)styledVisibleRows {
-  std::vector<std::vector<cot::TerminalCell>> source = _grid->viewportCells();
+  COTTerminalSnapshot *snapshot = [self currentSnapshot];
+  std::vector<std::vector<cot::TerminalCell>> source = snapshot->cells;
   NSMutableArray *rows = [NSMutableArray arrayWithCapacity:source.size()];
   for (const std::vector<cot::TerminalCell> &cells : source) {
     NSMutableArray *row = [NSMutableArray array];
@@ -429,101 +563,93 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 }
 
 - (NSUInteger)scrollbackLineCount {
-  return _grid->scrollbackLineCount();
+  return [self currentSnapshot]->scrollbackLineCount;
 }
 
 - (NSUInteger)viewportOffset {
-  return _grid->viewportOffset();
+  return [self currentSnapshot]->viewportOffset;
 }
 
 - (NSUInteger)maxViewportOffset {
-  return _grid->maxViewportOffset();
+  return [self currentSnapshot]->maxViewportOffset;
 }
 
 - (void)setViewportOffset:(NSUInteger)offset {
-  _grid->setViewportOffset(offset);
-  if ([_delegate respondsToSelector:@selector(terminalSessionDidUpdateScreen:)]) {
-    [_delegate terminalSessionDidUpdateScreen:self];
-  }
+  [self performGridMutation:^{
+    _grid->setViewportOffset(offset);
+  } notify:YES];
 }
 
 - (void)adjustViewportOffset:(NSInteger)delta {
-  _grid->adjustViewportOffset((long)delta);
-  if ([_delegate respondsToSelector:@selector(terminalSessionDidUpdateScreen:)]) {
-    [_delegate terminalSessionDidUpdateScreen:self];
-  }
+  [self performGridMutation:^{
+    _grid->adjustViewportOffset((long)delta);
+  } notify:YES];
 }
 
 - (void)scrollToBottom {
-  _grid->scrollToBottom();
-  if ([_delegate respondsToSelector:@selector(terminalSessionDidUpdateScreen:)]) {
-    [_delegate terminalSessionDidUpdateScreen:self];
-  }
+  [self performGridMutation:^{
+    _grid->scrollToBottom();
+  } notify:YES];
 }
 
 - (NSUInteger)cursorColumn {
-  return _grid->cursorColumn();
+  return [self currentSnapshot]->cursorColumn;
 }
 
 - (NSUInteger)cursorRow {
-  return _grid->cursorRow();
+  return [self currentSnapshot]->cursorRow;
 }
 
 - (BOOL)isUsingAlternateScreen {
-  return _grid->usingAlternateScreen();
+  return [self currentSnapshot]->usingAlternateScreen;
 }
 
 - (BOOL)hasUsedAlternateScreen {
-  return _grid->hasUsedAlternateScreen();
+  return [self currentSnapshot]->hasUsedAlternateScreen;
 }
 
 - (BOOL)hasColorSpans {
-  return _grid->hasColorSpans();
+  return [self currentSnapshot]->hasColorSpans;
 }
 
 - (BOOL)hasUnicode {
-  return _grid->hasUnicode();
+  return [self currentSnapshot]->hasUnicode;
 }
 
 - (BOOL)isMouseReportingEnabled {
-  return _grid->mouseReportingEnabled();
+  return [self currentSnapshot]->mouseReportingEnabled;
 }
 
 - (BOOL)isMouseButtonMotionReportingEnabled {
-  return _grid->mouseButtonMotionReportingEnabled();
+  return [self currentSnapshot]->mouseButtonMotionReportingEnabled;
 }
 
 - (BOOL)isMouseAnyMotionReportingEnabled {
-  return _grid->mouseAnyMotionReportingEnabled();
+  return [self currentSnapshot]->mouseAnyMotionReportingEnabled;
 }
 
 - (BOOL)isSGRMouseModeEnabled {
-  return _grid->sgrMouseModeEnabled();
+  return [self currentSnapshot]->sgrMouseModeEnabled;
 }
 
 - (BOOL)isAlternateScrollModeEnabled {
-  return _grid->alternateScrollModeEnabled();
+  return [self currentSnapshot]->alternateScrollModeEnabled;
 }
 
 - (BOOL)isCursorVisible {
-  return _grid->cursorVisible();
+  return [self currentSnapshot]->cursorVisible;
 }
 
 - (BOOL)isBracketedPasteEnabled {
-  return _grid->bracketedPasteEnabled();
+  return [self currentSnapshot]->bracketedPasteEnabled;
 }
 
 - (BOOL)isFocusReportingEnabled {
-  return _grid->focusReportingEnabled();
+  return [self currentSnapshot]->focusReportingEnabled;
 }
 
 - (NSString *)title {
-  const std::string &t = _grid->title();
-  if (t.empty()) {
-    return @"";
-  }
-  NSString *value = [[[NSString alloc] initWithBytes:t.data() length:t.size() encoding:NSUTF8StringEncoding] autorelease];
-  return value != nil ? value : @"";
+  return [self currentSnapshot]->title ?: @"";
 }
 
 - (NSString *)lastClipboardWrite {
@@ -544,23 +670,15 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 
 @implementation COTTerminalSession (Internal)
 
-- (const cot::TerminalGrid *)gridPointer {
-  return _grid;
+- (COTTerminalSnapshot *)currentSnapshot {
+  [_snapshotLock lock];
+  COTTerminalSnapshot *snapshot = [_snapshot retain];
+  [_snapshotLock unlock];
+  return [snapshot autorelease];
 }
 
 - (NSArray<NSNumber *> *)takeDirtyRows {
-  if (_grid == NULL) {
-    return [NSArray array];
-  }
-  std::vector<bool> rows;
-  _grid->getAndClearDirtyRows(rows);
-  NSMutableArray *result = [NSMutableArray arrayWithCapacity:rows.size()];
-  for (std::size_t i = 0; i < rows.size(); ++i) {
-    if (rows[i]) {
-      [result addObject:[NSNumber numberWithUnsignedInteger:(NSUInteger)i]];
-    }
-  }
-  return result;
+  return [NSArray array];
 }
 
 @end

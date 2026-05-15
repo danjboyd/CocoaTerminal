@@ -941,11 +941,10 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
 }
 
 - (void)scheduleTerminalSizeUpdate {
-  if (_terminalSizeUpdateScheduled) {
-    return;
-  }
   _terminalSizeUpdateScheduled = YES;
-  [self performSelector:@selector(performPendingTerminalSizeUpdate) withObject:nil afterDelay:0.0];
+  [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performPendingTerminalSizeUpdate) object:nil];
+  NSTimeInterval delay = [_session isRunning] ? 0.15 : 0.0;
+  [self performSelector:@selector(performPendingTerminalSizeUpdate) withObject:nil afterDelay:delay];
 }
 
 - (void)performPendingTerminalSizeUpdate {

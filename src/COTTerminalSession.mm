@@ -67,6 +67,9 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   dispatch_queue_t _terminalQueue;
   NSLock *_snapshotLock;
   COTTerminalSnapshot *_snapshot;
+  BOOL _resizeOperationScheduled;
+  NSUInteger _pendingColumns;
+  NSUInteger _pendingRows;
 }
 @end
 
@@ -450,25 +453,66 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 - (void)resizeToColumns:(NSUInteger)columns rows:(NSUInteger)rows {
   NSUInteger targetColumns = MIN(MAX(columns, 1), COTTerminalMaximumColumns);
   NSUInteger targetRows = MIN(MAX(rows, 1), COTTerminalMaximumRows);
-
-  if (_running) {
-    // Runtime libvterm resizes can stall the emulation queue on GNUstep/Linux.
-    // Keep the running grid stable so resize storms cannot block input echo.
-    _columns = targetColumns;
-    _rows = targetRows;
-    return;
-  }
-
   _columns = targetColumns;
   _rows = targetRows;
-  if (_grid == NULL) {
+
+  if (!_running) {
+    if (_grid == NULL) {
+      return;
+    }
+    dispatch_sync(_terminalQueue, ^{
+      if (_grid != NULL) {
+        _grid->resize(targetColumns, targetRows);
+        [self publishSnapshotAndNotify:YES];
+      }
+    });
     return;
   }
-  dispatch_sync(_terminalQueue, ^{
-    if (_grid != NULL) {
-      _grid->resize(targetColumns, targetRows);
-      [self publishSnapshotAndNotify:YES];
+
+  @synchronized (self) {
+    _pendingColumns = targetColumns;
+    _pendingRows = targetRows;
+    if (_resizeOperationScheduled) {
+      return;
     }
+    _resizeOperationScheduled = YES;
+  }
+
+  dispatch_async(_terminalQueue, ^{
+    for (;;) {
+      NSUInteger resizeColumns = 0;
+      NSUInteger resizeRows = 0;
+      @synchronized (self) {
+        resizeColumns = _pendingColumns;
+        resizeRows = _pendingRows;
+      }
+      if (_grid == NULL) {
+        @synchronized (self) {
+          _resizeOperationScheduled = NO;
+        }
+        return;
+      }
+      _grid->resize(resizeColumns, resizeRows);
+
+#if !defined(_WIN32)
+      if (_masterFd >= 0) {
+        struct winsize size;
+        size.ws_col = (unsigned short)resizeColumns;
+        size.ws_row = (unsigned short)resizeRows;
+        size.ws_xpixel = 0;
+        size.ws_ypixel = 0;
+        ioctl(_masterFd, TIOCSWINSZ, &size);
+      }
+#endif
+      [self publishSnapshotAndNotify:YES];
+
+      @synchronized (self) {
+        if (_pendingColumns == resizeColumns && _pendingRows == resizeRows) {
+          _resizeOperationScheduled = NO;
+          return;
+        }
+      }
+    };
   });
 }
 

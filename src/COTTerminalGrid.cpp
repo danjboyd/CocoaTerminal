@@ -217,7 +217,7 @@ void TerminalGrid::ingest(const char* bytes, std::size_t length) {
   snoopPrivateModes(bytes, length);
   vterm_input_write(static_cast<VTerm*>(vt_), bytes, length);
   vterm_screen_flush_damage(static_cast<VTermScreen*>(screenPtr_));
-  rebuildVisibleCells();
+  rebuildDirtyVisibleCells();
 }
 
 void TerminalGrid::snoopPrivateModes(const char* bytes, std::size_t length) {
@@ -456,6 +456,74 @@ void TerminalGrid::rebuildVisibleCells() {
   }
 }
 
+void TerminalGrid::rebuildDirtyVisibleCells() {
+  if (fullRedrawPending_ || screen_.size() != rows_ || visibleLines_.size() != rows_) {
+    rebuildVisibleCells();
+    return;
+  }
+  if (dirtyRows_.size() != rows_) {
+    dirtyRows_.assign(rows_, true);
+    fullRedrawPending_ = true;
+    rebuildVisibleCells();
+    return;
+  }
+  for (std::size_t row = 0; row < rows_; ++row) {
+    if (dirtyRows_[row]) {
+      rebuildVisibleRow(row);
+    }
+  }
+}
+
+void TerminalGrid::rebuildVisibleRow(std::size_t row) {
+  if (row >= rows_) {
+    return;
+  }
+  if (screen_.size() != rows_) {
+    screen_.assign(rows_, std::vector<TerminalCell>(columns_, makeBlankCell()));
+  }
+  if (visibleLines_.size() != rows_) {
+    visibleLines_.assign(rows_, std::string(columns_, ' '));
+  }
+  if (screen_[row].size() != columns_) {
+    screen_[row].assign(columns_, makeBlankCell());
+  }
+
+  std::string lineText;
+  lineText.reserve(columns_);
+  bool sawColor = false;
+  std::size_t column = 0;
+  while (column < columns_) {
+    VTermScreenCell raw;
+    std::memset(&raw, 0, sizeof(raw));
+    VTermPos pos = { static_cast<int>(row), static_cast<int>(column) };
+    vterm_screen_get_cell(static_cast<VTermScreen*>(screenPtr_), pos, &raw);
+    TerminalCell cell = cellFromVTermOpaque(&raw);
+    int width = cell.width;
+    screen_[row][column] = cell;
+    lineText += cell.text;
+    for (int offset = 1; offset < width && column + offset < columns_; ++offset) {
+      TerminalCell continuation;
+      continuation.text = " ";
+      continuation.width = 0;
+      continuation.continuation = true;
+      continuation.attributes = cell.attributes;
+      screen_[row][column + offset] = continuation;
+    }
+    if (cell.attributes.foreground.kind != TerminalColor::Kind::Default ||
+        cell.attributes.background.kind != TerminalColor::Kind::Default) {
+      sawColor = true;
+    }
+    column += std::max(1, width);
+  }
+  while (lineText.size() < columns_) {
+    lineText.push_back(' ');
+  }
+  visibleLines_[row] = lineText;
+  if (sawColor) {
+    hasColorSpans_ = true;
+  }
+}
+
 void TerminalGrid::appendScrollback(std::vector<TerminalCell> line) {
   if (scrollbackLimit_ == 0) {
     return;
@@ -544,8 +612,10 @@ int TerminalGrid::onDamage(int startRow, int endRow) {
 }
 
 int TerminalGrid::onMoveCursor(int row, int col, int visible) {
+  markRowDirty(static_cast<int>(cursorRow_));
   cursorRow_ = row >= 0 ? static_cast<std::size_t>(row) : 0;
   cursorCol_ = col >= 0 ? static_cast<std::size_t>(col) : 0;
+  markRowDirty(static_cast<int>(cursorRow_));
   if (visible == 0) {
     cursorVisible_ = false;
   } else if (visible == 1) {

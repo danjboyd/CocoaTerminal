@@ -123,6 +123,8 @@ private:
   void initVTerm();
   void destroyVTerm();
   void rebuildVisibleCells();
+  void rebuildDirtyVisibleCells();
+  void rebuildVisibleRow(std::size_t row);
   void snoopPrivateModes(const char* bytes, std::size_t length);
   void appendScrollback(std::vector<TerminalCell> line);
   TerminalCell cellFromVTermOpaque(const void* src) const;

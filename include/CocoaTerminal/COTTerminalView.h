@@ -29,6 +29,7 @@ extern NSString *const COTTerminalExitStatusUserInfoKey;
 - (void)pasteFromClipboard;
 - (void)clearSelection;
 - (void)selectAll;
+- (NSDictionary *)performanceSnapshot;
 
 @end
 

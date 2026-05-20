@@ -15,6 +15,22 @@ NSString *const COTTerminalExitStatusUserInfoKey = @"status";
 static NSUInteger const COTTerminalMaximumColumns = 1000;
 static NSUInteger const COTTerminalMaximumRows = 1000;
 
+static NSTimeInterval COTTerminalRepaintInterval(void) {
+  static NSTimeInterval interval = 0.0;
+  if (interval == 0.0) {
+    double maxFPS = 30.0;
+    const char *override_ = getenv("COCOATERMINAL_MAX_FPS");
+    if (override_ != NULL) {
+      double parsed = atof(override_);
+      if (parsed >= 5.0 && parsed <= 120.0) {
+        maxFPS = parsed;
+      }
+    }
+    interval = 1.0 / maxFPS;
+  }
+  return interval;
+}
+
 static NSString *COTSequenceForFunctionKey(unichar key) {
   switch (key) {
   case NSUpArrowFunctionKey:
@@ -77,6 +93,15 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   NSInteger _selectionCurrentColumn;
   BOOL _selectingLocally;
   BOOL _terminalSizeUpdateScheduled;
+  BOOL _screenUpdateScheduled;
+  BOOL _pendingFullRedraw;
+  NSMutableIndexSet *_pendingDirtyRows;
+  BOOL _perfLoggingEnabled;
+  NSTimeInterval _perfLastLogTime;
+  NSUInteger _perfScreenUpdates;
+  NSUInteger _perfDrawCalls;
+  NSUInteger _perfDirtyRows;
+  NSUInteger _perfFullRedraws;
 }
 @end
 
@@ -102,6 +127,9 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
     [_session setDelegate:self];
     _baseFontSize = [[configuration theme] fontSize];
     _activeMouseButton = -1;
+    _pendingDirtyRows = [[NSMutableIndexSet alloc] init];
+    _perfLoggingEnabled = getenv("COCOATERMINAL_PERF_LOG") != NULL;
+    _perfLastLogTime = [NSDate timeIntervalSinceReferenceDate];
     [self rebuildTextAttributes];
     [self setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
     [self setPostsFrameChangedNotifications:YES];
@@ -120,6 +148,9 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
     [_session setDelegate:self];
     _baseFontSize = [[[_session configuration] theme] fontSize];
     _activeMouseButton = -1;
+    _pendingDirtyRows = [[NSMutableIndexSet alloc] init];
+    _perfLoggingEnabled = getenv("COCOATERMINAL_PERF_LOG") != NULL;
+    _perfLastLogTime = [NSDate timeIntervalSinceReferenceDate];
     [self rebuildTextAttributes];
     [self setPostsFrameChangedNotifications:YES];
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -132,9 +163,11 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
 
 - (void)dealloc {
   [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performPendingTerminalSizeUpdate) object:nil];
+  [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performPendingScreenUpdate) object:nil];
   [[NSNotificationCenter defaultCenter] removeObserver:self];
   [_session setDelegate:nil];
   [_session release];
+  [_pendingDirtyRows release];
   [_textAttributes release];
   [super dealloc];
 }
@@ -247,6 +280,7 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
+  _perfDrawCalls += 1;
   COTTerminalTheme *theme = [[_session configuration] theme];
   NSColor *backgroundColor = [theme backgroundColor];
   if ([theme opacity] < 1.0) {
@@ -290,12 +324,54 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
     NSInteger columnIndex = 0;
     NSMutableAttributedString *line = [[NSMutableAttributedString alloc] init];
     CGFloat lineStartX = x;
+    std::string runText;
+    NSDictionary *runAttributes = nil;
+    auto flushRun = [&]() {
+      if (runText.empty()) {
+        return;
+      }
+      NSString *text = [[[NSString alloc] initWithBytes:runText.data()
+                                                 length:runText.size()
+                                               encoding:NSUTF8StringEncoding] autorelease];
+      if (text == nil) {
+        text = @" ";
+      }
+      NSAttributedString *piece = [[NSAttributedString alloc] initWithString:text attributes:runAttributes ?: _textAttributes];
+      [line appendAttributedString:piece];
+      [piece release];
+      runText.clear();
+    };
+
+    NSInteger lastContentColumn = (NSInteger)row.size();
+    if (!drawSelection) {
+      lastContentColumn = 0;
+      NSInteger scanColumn = 0;
+      for (std::size_t i = 0; i < row.size(); ++i) {
+        const cot::TerminalCell &cell = row[i];
+        if (cell.continuation) {
+          scanColumn += 1;
+          continue;
+        }
+        int cellWidthCells = std::max(1, cell.width);
+        BOOL defaultForegroundCell = (cell.attributes.foreground.kind == cot::TerminalColor::Kind::Default);
+        BOOL defaultBackgroundCell = (cell.attributes.background.kind == cot::TerminalColor::Kind::Default);
+        BOOL blankDefaultCell = defaultForegroundCell && defaultBackgroundCell &&
+          !cell.attributes.inverse && !cell.attributes.underline && cell.text == " ";
+        if (!blankDefaultCell) {
+          lastContentColumn = scanColumn + cellWidthCells;
+        }
+        scanColumn += cellWidthCells;
+      }
+    }
 
     for (std::size_t i = 0; i < row.size(); ++i) {
       const cot::TerminalCell &cell = row[i];
       if (cell.continuation) {
         columnIndex += 1;
         continue;
+      }
+      if (!drawSelection && columnIndex >= lastContentColumn) {
+        break;
       }
       int cellWidthCells = std::max(1, cell.width);
       CGFloat cellRectWidth = cellWidth * cellWidthCells;
@@ -323,21 +399,17 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
         NSRectFill(NSMakeRect(x, y, cellRectWidth, lineHeight));
       }
 
-      NSString *text = [[NSString alloc] initWithBytes:cell.text.data()
-                                                length:cell.text.size()
-                                              encoding:NSUTF8StringEncoding];
-      if (text == nil) {
-        text = [@" " retain];
-      }
-      NSDictionary *attrs = (foreground == defaultForeground)
+      NSDictionary *attrs = [foreground isEqual:defaultForeground]
         ? _textAttributes
-        : @{NSFontAttributeName: font, NSForegroundColorAttributeName: foreground};
-      NSAttributedString *piece = [[NSAttributedString alloc] initWithString:text attributes:attrs];
-      [line appendAttributedString:piece];
-      [piece release];
-      [text release];
+        : [NSDictionary dictionaryWithObjectsAndKeys:font, NSFontAttributeName, foreground, NSForegroundColorAttributeName, nil];
+      if (runAttributes != nil && ![runAttributes isEqual:attrs]) {
+        flushRun();
+      }
+      runAttributes = attrs;
+      runText += cell.text;
 
       if (cell.attributes.underline) {
+        flushRun();
         [foreground setFill];
         NSRectFill(NSMakeRect(x, y, cellRectWidth, 1.0));
       }
@@ -345,6 +417,7 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
       x += cellRectWidth;
       columnIndex += cellWidthCells;
     }
+    flushRun();
     [line drawAtPoint:NSMakePoint(lineStartX, y)];
     [line release];
     y -= lineHeight;
@@ -1012,9 +1085,102 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   [self setZoomFontSize:_baseFontSize];
 }
 
+- (NSRect)rectForTerminalRow:(NSUInteger)row snapshot:(COTTerminalSnapshot *)snapshot {
+  COTTerminalTheme *theme = [[_session configuration] theme];
+  NSFont *font = [theme font];
+  NSEdgeInsets insets = [theme contentInsets];
+  CGFloat lineHeight = _lineHeight > 0 ? _lineHeight : MAX([font ascender] - [font descender] + [theme lineSpacing], 1.0);
+  CGFloat y = NSMaxY([self bounds]) - insets.top - lineHeight - (CGFloat)row * lineHeight;
+  return NSMakeRect(0.0, y, [self bounds].size.width, lineHeight);
+}
+
+- (void)scheduleScreenUpdate {
+  if (_screenUpdateScheduled) {
+    return;
+  }
+  _screenUpdateScheduled = YES;
+  [self performSelector:@selector(performPendingScreenUpdate) withObject:nil afterDelay:COTTerminalRepaintInterval()];
+}
+
+- (void)recordPerfUpdateWithDirtyRowCount:(NSUInteger)dirtyRowCount {
+  _perfScreenUpdates += 1;
+  _perfDirtyRows += dirtyRowCount;
+  if (!_perfLoggingEnabled) {
+    return;
+  }
+  NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+  if (now - _perfLastLogTime >= 1.0) {
+    fprintf(stderr,
+            "[CocoaTerminal perf] updates=%lu draws=%lu dirtyRows=%lu\n",
+            (unsigned long)_perfScreenUpdates,
+            (unsigned long)_perfDrawCalls,
+            (unsigned long)_perfDirtyRows);
+    fflush(stderr);
+    _perfScreenUpdates = 0;
+    _perfDrawCalls = 0;
+    _perfDirtyRows = 0;
+    _perfLastLogTime = now;
+  }
+}
+
+- (void)performPendingScreenUpdate {
+  _screenUpdateScheduled = NO;
+  COTTerminalSnapshot *snapshot = [_session currentSnapshot];
+  if (snapshot == nil) {
+    [_pendingDirtyRows removeAllIndexes];
+    _pendingFullRedraw = NO;
+    return;
+  }
+  if ([self isHiddenOrHasHiddenAncestor] || [self window] == nil) {
+    [_pendingDirtyRows removeAllIndexes];
+    _pendingFullRedraw = YES;
+    return;
+  }
+
+  NSUInteger dirtyCount = [_pendingDirtyRows count];
+  BOOL fullRedraw = _pendingFullRedraw || dirtyCount == 0 || dirtyCount > MAX((NSUInteger)1, snapshot->rows / 2);
+  [self recordPerfUpdateWithDirtyRowCount:(fullRedraw ? snapshot->rows : dirtyCount)];
+  if (fullRedraw) {
+    _perfFullRedraws += 1;
+    [self setNeedsDisplay:YES];
+  } else {
+    NSUInteger row = [_pendingDirtyRows firstIndex];
+    while (row != NSNotFound) {
+      [self setNeedsDisplayInRect:[self rectForTerminalRow:row snapshot:snapshot]];
+      row = [_pendingDirtyRows indexGreaterThanIndex:row];
+    }
+  }
+  [_pendingDirtyRows removeAllIndexes];
+  _pendingFullRedraw = NO;
+}
+
+- (NSDictionary *)performanceSnapshot {
+  return [NSDictionary dictionaryWithObjectsAndKeys:
+    [NSNumber numberWithUnsignedInteger:_perfScreenUpdates], @"screenUpdates",
+    [NSNumber numberWithUnsignedInteger:_perfDrawCalls], @"drawCalls",
+    [NSNumber numberWithUnsignedInteger:_perfDirtyRows], @"dirtyRows",
+    [NSNumber numberWithUnsignedInteger:_perfFullRedraws], @"fullRedraws",
+    [NSNumber numberWithDouble:(1.0 / COTTerminalRepaintInterval())], @"maxFPS",
+    nil];
+}
+
 - (void)terminalSessionDidUpdateScreen:(COTTerminalSession *)session {
-  (void)session;
-  [self setNeedsDisplay:YES];
+  COTTerminalSnapshot *snapshot = [session currentSnapshot];
+  if (snapshot == nil) {
+    _pendingFullRedraw = YES;
+    [self scheduleScreenUpdate];
+    return;
+  }
+  if (snapshot->fullRedraw || snapshot->dirtyRows.empty()) {
+    _pendingFullRedraw = YES;
+  } else {
+    for (std::size_t row = 0; row < snapshot->dirtyRows.size(); ++row) {
+      if (snapshot->dirtyRows[row]) {
+        [_pendingDirtyRows addIndex:(NSUInteger)row];
+      }
+    }
+  }
+  [self scheduleScreenUpdate];
 }
 
 - (void)terminalSession:(COTTerminalSession *)session didExitWithStatus:(int)status {

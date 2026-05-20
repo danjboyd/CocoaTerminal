@@ -70,6 +70,14 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   BOOL _resizeOperationScheduled;
   NSUInteger _pendingColumns;
   NSUInteger _pendingRows;
+  BOOL _perfLoggingEnabled;
+  NSTimeInterval _perfLastLogTime;
+  NSUInteger _perfReadNotifications;
+  NSUInteger _perfBytesRead;
+  NSUInteger _perfIngests;
+  NSUInteger _perfPublishes;
+  NSUInteger _perfDirtyRows;
+  NSUInteger _perfFullRedraws;
 }
 @end
 
@@ -96,6 +104,9 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   snapshot->scrollbackLineCount = _grid->scrollbackLineCount();
   snapshot->viewportOffset = _grid->viewportOffset();
   snapshot->maxViewportOffset = _grid->maxViewportOffset();
+  snapshot->fullRedraw = _grid->fullRedrawPending();
+  _grid->getAndClearDirtyRows(snapshot->dirtyRows);
+  _grid->clearFullRedrawPending();
   if (_grid->viewportOffset() == 0) {
     snapshot->cells = _grid->visibleCells();
     snapshot->lines = _grid->visibleLines();
@@ -117,6 +128,7 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 
 - (void)publishSnapshotAndNotify:(BOOL)notify {
   COTTerminalSnapshot *snapshot = [[self snapshotFromGrid] retain];
+  [self recordPerfPublishWithSnapshot:snapshot];
   [_snapshotLock lock];
   [_snapshot release];
   _snapshot = snapshot;
@@ -174,9 +186,59 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     _running = NO;
     _terminalQueue = dispatch_queue_create("org.cocoaterminal.session", DISPATCH_QUEUE_SERIAL);
     _snapshotLock = [[NSLock alloc] init];
+    _perfLoggingEnabled = getenv("COCOATERMINAL_PERF_LOG") != NULL;
+    _perfLastLogTime = [NSDate timeIntervalSinceReferenceDate];
     [self publishSnapshotAndNotify:NO];
   }
   return self;
+}
+
+- (void)recordPerfReadWithByteCount:(NSUInteger)byteCount {
+  if (!_perfLoggingEnabled) {
+    return;
+  }
+  _perfReadNotifications += 1;
+  _perfBytesRead += byteCount;
+}
+
+- (void)recordPerfIngest {
+  if (_perfLoggingEnabled) {
+    _perfIngests += 1;
+  }
+}
+
+- (void)recordPerfPublishWithSnapshot:(COTTerminalSnapshot *)snapshot {
+  if (!_perfLoggingEnabled) {
+    return;
+  }
+  _perfPublishes += 1;
+  if (snapshot->fullRedraw) {
+    _perfFullRedraws += 1;
+  }
+  for (bool dirty : snapshot->dirtyRows) {
+    if (dirty) {
+      _perfDirtyRows += 1;
+    }
+  }
+  NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+  if (now - _perfLastLogTime >= 1.0) {
+    fprintf(stderr,
+            "[CocoaTerminal session perf] reads=%lu bytes=%lu ingests=%lu publishes=%lu dirtyRows=%lu fullRedraws=%lu\n",
+            (unsigned long)_perfReadNotifications,
+            (unsigned long)_perfBytesRead,
+            (unsigned long)_perfIngests,
+            (unsigned long)_perfPublishes,
+            (unsigned long)_perfDirtyRows,
+            (unsigned long)_perfFullRedraws);
+    fflush(stderr);
+    _perfReadNotifications = 0;
+    _perfBytesRead = 0;
+    _perfIngests = 0;
+    _perfPublishes = 0;
+    _perfDirtyRows = 0;
+    _perfFullRedraws = 0;
+    _perfLastLogTime = now;
+  }
 }
 
 - (void)writeReplyBytes:(const char *)bytes length:(std::size_t)length {
@@ -372,8 +434,10 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     [self deliverChildExit];
     return;
   }
+  [self recordPerfReadWithByteCount:[data length]];
   NSData *ownedData = [data copy];
   [self performGridMutation:^{
+    [self recordPerfIngest];
     _grid->ingest((const char *)[ownedData bytes], (std::size_t)[ownedData length]);
     [ownedData release];
   } notify:YES];
@@ -434,8 +498,10 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   for (;;) {
     ssize_t count = read(_masterFd, buffer, sizeof(buffer));
     if (count > 0) {
+      [self recordPerfReadWithByteCount:(NSUInteger)count];
       NSData *ownedData = [[NSData alloc] initWithBytes:buffer length:(NSUInteger)count];
       [self performGridMutation:^{
+        [self recordPerfIngest];
         _grid->ingest((const char *)[ownedData bytes], (std::size_t)[ownedData length]);
         [ownedData release];
       } notify:YES];
@@ -706,7 +772,17 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 }
 
 - (NSArray<NSNumber *> *)takeDirtyRows {
-  return [NSArray array];
+  COTTerminalSnapshot *snapshot = [self currentSnapshot];
+  if (snapshot == nil) {
+    return [NSArray array];
+  }
+  NSMutableArray *rows = [NSMutableArray array];
+  for (std::size_t row = 0; row < snapshot->dirtyRows.size(); ++row) {
+    if (snapshot->dirtyRows[row]) {
+      [rows addObject:[NSNumber numberWithUnsignedLong:row]];
+    }
+  }
+  return rows;
 }
 
 @end

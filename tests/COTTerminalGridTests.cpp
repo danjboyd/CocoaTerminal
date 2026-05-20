@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -23,6 +24,23 @@ void expect(bool condition, const std::string &message) {
     std::cerr << message << "\n";
     std::exit(1);
   }
+}
+
+std::vector<bool> takeDirty(cot::TerminalGrid &grid) {
+  std::vector<bool> dirty;
+  grid.getAndClearDirtyRows(dirty);
+  grid.clearFullRedrawPending();
+  return dirty;
+}
+
+std::size_t dirtyCount(const std::vector<bool> &dirty) {
+  std::size_t count = 0;
+  for (bool row : dirty) {
+    if (row) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 } // namespace
@@ -47,6 +65,20 @@ int main() {
   grid.resize(4, 2);
   expectLine(grid, 0, "x   ");
   expectLine(grid, 1, "    ");
+
+  cot::TerminalGrid dirtyGrid(8, 3);
+  takeDirty(dirtyGrid);
+  dirtyGrid.ingest("x", 1);
+  std::vector<bool> dirty = takeDirty(dirtyGrid);
+  expect(dirty.size() == 3, "expected dirty row vector to match visible rows");
+  expect(dirty[0] && dirtyCount(dirty) == 1, "expected single-cell input to dirty only row 0");
+  dirtyGrid.ingest("\033[B", 3);
+  dirty = takeDirty(dirtyGrid);
+  expect(dirty[0] && dirty[1], "expected cursor movement to dirty old and new cursor rows");
+  dirtyGrid.resize(10, 4);
+  expect(dirtyGrid.fullRedrawPending(), "expected resize to request a full redraw");
+  dirty = takeDirty(dirtyGrid);
+  expect(dirty.size() == 4 && dirtyCount(dirty) == 4, "expected resize to dirty all visible rows");
 
   cot::TerminalGrid colorGrid(16, 2);
   const char *color = "\033[31mred\033[0m";

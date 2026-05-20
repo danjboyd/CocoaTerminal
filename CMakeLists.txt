@@ -65,6 +65,7 @@ else()
   target_link_directories(CocoaTerminal PUBLIC ${GNUSTEP_GUI_LIBRARY_DIRS})
   target_link_options(CocoaTerminal PUBLIC ${GNUSTEP_GUI_LDFLAGS_OTHER})
   target_link_libraries(CocoaTerminal PUBLIC ${GNUSTEP_GUI_LIBRARIES} util)
+  target_link_libraries(CocoaTerminal PUBLIC dispatch)
 endif()
 
 install(TARGETS CocoaTerminal

@@ -63,7 +63,11 @@ static NSFont *COTFontWithFamily(NSString *family, CGFloat size) {
 + (instancetype)alacrittyInspiredDarkTheme {
   COTTerminalTheme *theme = [[[self alloc] init] autorelease];
   theme.name = @"Alacritty Inspired Dark";
+#if defined(__APPLE__)
   theme.fontFamily = @"Intel One Mono";
+#else
+  theme.fontFamily = @"DejaVu Sans Mono";
+#endif
   theme.fontSize = 13.0;
   theme.backgroundColor = COTColorFromHex(0x181818);
   theme.foregroundColor = COTColorFromHex(0xe6e1dc);

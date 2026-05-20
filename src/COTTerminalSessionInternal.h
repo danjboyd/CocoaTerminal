@@ -32,6 +32,8 @@
   NSUInteger scrollbackLineCount;
   NSUInteger viewportOffset;
   NSUInteger maxViewportOffset;
+  std::vector<bool> dirtyRows;
+  BOOL fullRedraw;
   NSString *title;
 }
 @end

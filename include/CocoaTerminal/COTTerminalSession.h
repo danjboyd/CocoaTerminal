@@ -8,8 +8,16 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+typedef NS_ENUM(NSInteger, COTTerminalEnqueueResult) {
+  COTTerminalEnqueueAccepted = 0,
+  COTTerminalEnqueueBackpressured = 1,
+  COTTerminalEnqueueClosed = 2,
+  COTTerminalEnqueueFailed = 3,
+};
+
 @protocol COTTerminalDelegate <NSObject>
 @optional
+- (void)terminalSession:(COTTerminalSession *)session didEncounterTransportError:(NSString *)message;
 - (void)terminalSessionDidUpdateScreen:(COTTerminalSession *)session;
 - (void)terminalSession:(COTTerminalSession *)session didExitWithStatus:(int)status;
 - (void)terminalSessionDidRequestBell:(COTTerminalSession *)session;
@@ -42,6 +50,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)terminate;
 - (void)poll;
 - (void)resizeToColumns:(NSUInteger)columns rows:(NSUInteger)rows;
+// Accepted = whole immutable transaction admitted locally, not child execution.
+// Total pending limit 1 MiB. Backpressure rejects the whole transaction. No retry
+// or replay is automatic. The legacy wrapper exposes refusal in transportError.
+- (COTTerminalEnqueueResult)trySendInput:(NSData *)data;
+@property (nonatomic, readonly, copy, nullable) NSString *transportError;
 - (void)sendInput:(NSData *)data;
 - (NSArray<NSString *> *)visibleLines;
 - (NSArray<NSArray<NSDictionary *> *> *)styledVisibleRows;

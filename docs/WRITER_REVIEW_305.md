@@ -1,0 +1,27 @@
+# Patch A: bounded writer source review
+
+Owner16748 chose this scope. Separate branch based exactly on observer3fe505e31955d689792536902364e32ef6c5f088; it preserves observer prerequisites and does not claim acceptance of their source. Original observer and AIManager host branches are unchanged. No live child, SSH, clipboard, push, merge or upstream post was run.
+
+## Implemented source
+
+COTTransportWriter has one serial-owner contract. The session uses its terminal serial queue for enqueue/drain/readiness/fd adoption/close and resize. Its injected adapter is independent of OS/process/AppKit. trySendInput returns Accepted/Backpressured/Closed/Failed. Accepted means a whole immutable transaction entered the local writer, never child execution; an immediate or later drain failure remains separately observable in transportError/delegate. Maximum pending bytes is1MiB; overflow rejects the whole transaction before copying/writing and never trims/retries it. Sent prefixes can remain allocated until the front transaction completes (storage remains bounded, up to less than2MiB for payload buffers).
+
+One FIFO writes partial suffixes, retries EINTR, and arms readiness on EAGAIN/EWOULDBLOCK. Enqueue while armed only appends; it does not spin or poll. Permanent/zero/invalid write results fail and cancel all pending bytes without replay. Close invalidates generation and drops queued bytes. Old readiness cannot affect a reused descriptor. Observe is frozen and checked at both session enqueue and final core drain. Bracketed paste now constructs one combined begin/body/end transaction before enqueue. No test reads a pasteboard.
+
+The old void sendInput wrapper uses trySendInput; rejection/error is retained as transportError, reported to the delegate, and displayed as an error footer by the view. A caller must handle Backpressured explicitly; there is no automatic caller retry. Parser replies use the same writer. Nonblocking setup is checked before exposing a newly adopted writer descriptor. Replacing an open writer is refused; natural-exit transport must be explicitly cleaned before restart.
+
+The core owns the fd until its close adapter retires it. Session _masterFd is a borrowed alias for legacy read code, never an independent close owner. A per-generation dispatch WRITE source is suspended when empty and resumed on backpressure. Close cancels it, resumes if needed to finish cancellation, and closes its owned fd in the cancellation handler, avoiding premature reuse under a pending readiness callback. A proxy whose session pointer is cleared on the same serial queue prevents readiness callbacks from retaining or messaging a deallocated session. Old NSFileHandle object notifications are ignored. This is a source design, not a runtime certification of libdispatch/platform behavior.
+
+## Important remaining B blockers
+
+A does NOT solve lifecycle/read quiescence. Existing NSFileHandle background reads and poll's direct read are still present; they must be reduced to one path before live/interactive use. Pending reader cancellation and final-output/EOF order need B. The existing blocking EOF wait, double-reap/status loss, terminate PID-loss and postfork mechanics remain. No independent second fd owner should be added in B. B must share A's serial owner and generation, preserve raw wait-status compatibility, add explicit unknown/error state, retain PID/reaper until actual reap, and refuse restart until complete cleanup. No process-group kill/escalation is introduced by A. Actual OS close completion currently remains asynchronous through source cancellation; B must include it in its cleanup-complete barrier.
+
+No claim that A alone prevents all stale-reader effects: its no-replay guarantee covers writer-owned pending bytes/readiness, while stale parser/read lifecycle needs the B generation design. Until B resolves this and approved runtime tests pass, the integrated session remains a review prototype, not an operational interactive terminal.
+
+## Validation performed
+
+Low-priority single-job GNUstep build compiles library/demo/test executables. ONLY CocoaTerminalWriterTests was executed for this patch: fully injected adapters, no OS fd/process/SSH/clipboard. Cases: short write, EINTR, EAGAIN exact suffix/readiness, no write while armed, FIFO immutable copy, paste/reply transaction ordering,1MiB overflow whole reject, closed/Observe denial, final-drain Observe, generation invalidation with reused fake descriptor, close once/cancellation, immediate/asynchronous permanent failures, zero/invalid adapter progress. Existing observer tests were adjusted to adopt a test descriptor through the writer owner rather than mutate a borrowed alias, but were not run under this source-only scope. Existing core/theme/observer runtime results from3fe505e do not certify this changed branch.
+
+Reproduce: configure/build as in OBSERVER_POLICY/AIManager TERMINAL_SYNTHETIC_305.md, then `ctest --test-dir <writer-build> -R '^CocoaTerminalWriterTests$' --output-on-failure`. No runtime service or GUI needed for that test. Optional dynamic adapter/lifecycle/GUI/PTY tests require separately reviewed scope and should not use real targets or clipboard.
+
+Review before integration: additive API semantics, error UI, allocation limits, serial owner/cancel-source lifetime, generation boundary, and B seam. Source findings in COT_PREREQUISITES_305.md remain source/inference, not reproduced live failures.

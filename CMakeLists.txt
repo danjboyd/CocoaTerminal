@@ -30,6 +30,7 @@ endif()
 add_library(CocoaTerminal
   src/COTTerminalConfiguration.mm
   src/COTTerminalGrid.cpp
+  src/COTTransportWriter.cpp
   src/COTTerminalSession.mm
   src/COTTerminalTheme.mm
   src/COTTerminalView.mm
@@ -133,4 +134,10 @@ if(COCOATERMINAL_BUILD_TESTS AND NOT WIN32)
   set_target_properties(CocoaTerminalObserverTests PROPERTIES LINKER_LANGUAGE OBJCXX)
   target_link_libraries(CocoaTerminalObserverTests PRIVATE CocoaTerminal::CocoaTerminal)
   add_test(NAME CocoaTerminalObserverTests COMMAND CocoaTerminalObserverTests)
+endif()
+
+if(COCOATERMINAL_BUILD_TESTS)
+  add_executable(CocoaTerminalWriterTests tests/COTTransportWriterTests.cpp src/COTTransportWriter.cpp)
+  target_include_directories(CocoaTerminalWriterTests PRIVATE src)
+  add_test(NAME CocoaTerminalWriterTests COMMAND CocoaTerminalWriterTests)
 endif()

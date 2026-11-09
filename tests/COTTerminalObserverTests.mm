@@ -12,6 +12,7 @@
 #include <sys/ioctl.h>
 
 @interface COTTerminalSession (ObserverTests)
+- (BOOL)adoptTransportDescriptor:(int)descriptor;
 - (void)writeReplyBytes:(const char *)bytes length:(std::size_t)length;
 - (void)deliverClipboardWrite:(const std::string &)data;
 - (std::string)readClipboardForRemote;
@@ -31,9 +32,7 @@ static void expect(BOOL value, const char *message) {
   if (!value) { std::cerr << message << "\n"; std::exit(1); }
 }
 static void putFD(COTTerminalSession *session, int fd) {
-  Ivar ivar = class_getInstanceVariable([COTTerminalSession class], "_masterFd");
-  expect(ivar != NULL, "test transport injection unavailable");
-  *(int *)((char *)session + ivar_getOffset(ivar)) = fd;
+  expect([session adoptTransportDescriptor:fd], "test transport adoption failed");
 }
 static void drainParser(COTTerminalSession *session) {
   Ivar ivar = class_getInstanceVariable([COTTerminalSession class], "_terminalQueue");

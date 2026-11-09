@@ -7,6 +7,7 @@
 #import "COTTerminalSessionInternal.h"
 
 #include "COTTerminalGrid.h"
+#include "COTTransportWriter.h"
 
 #import <dispatch/dispatch.h>
 
@@ -20,6 +21,14 @@
 #if defined(__APPLE__) || defined(__linux__) || defined(__FreeBSD__)
 #include <pty.h>
 #endif
+
+static char COTTerminalOwnerKey;
+@interface COTWriterTarget : NSObject
+@property(nonatomic, assign) COTTerminalSession *session;
+@end
+@implementation COTWriterTarget
+@synthesize session;
+@end
 
 static NSString *const COTTerminalErrorDomain = @"COTTerminalErrorDomain";
 static NSUInteger const COTTerminalMaximumColumns = 1000;
@@ -66,6 +75,11 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   COTSessionHandle *_handle;
   COTTerminalConfiguration *_configuration;
   cot::TerminalGrid *_grid;
+  cot::TransportWriter *_writer;
+  dispatch_source_t _writeSource;
+  BOOL _writeSourceResumed;
+  COTWriterTarget *_writerTarget;
+  NSString *_transportError;
   int _masterFd;
   pid_t _childPid;
   BOOL _running;
@@ -224,6 +238,19 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     _childPid = -1;
     _running = NO;
     _terminalQueue = dispatch_queue_create("org.cocoaterminal.session", DISPATCH_QUEUE_SERIAL);
+    dispatch_queue_set_specific(_terminalQueue, &COTTerminalOwnerKey, self, NULL);
+    _writerTarget = [[COTWriterTarget alloc] init];
+    _writerTarget.session = self;
+    COTTerminalSession *writerSelf = self;
+    _writer = new cot::TransportWriter({
+      [](int fd, const char *bytes, std::size_t length) -> cot::WriteResult {
+        ssize_t count = write(fd, bytes, length);
+        return {count, count < 0 ? errno : 0};
+      },
+      [writerSelf](int, std::uint64_t) { [writerSelf setWritableEnabled:YES]; },
+      [writerSelf]() { [writerSelf setWritableEnabled:NO]; },
+      [writerSelf](int fd) { [writerSelf retireWriterDescriptor:fd]; }
+    });
     _snapshotLock = [[NSLock alloc] init];
     _handle = [[COTSessionHandle alloc] init];
     _handle->session = self;
@@ -282,20 +309,97 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   }
 }
 
+// These methods execute on the terminal serial owner, including close and
+// readiness events. The separate read/child lifecycle still needs patch B.
+- (void)withTransportOwner:(dispatch_block_t)block {
+  if (dispatch_get_specific(&COTTerminalOwnerKey) == self) block();
+  else dispatch_sync(_terminalQueue, block);
+}
+- (void)setWritableEnabled:(BOOL)enabled {
+  if (!_writeSource || enabled == _writeSourceResumed) return;
+  if (enabled) dispatch_resume(_writeSource); else dispatch_suspend(_writeSource);
+  _writeSourceResumed = enabled;
+}
+- (void)retireWriterDescriptor:(int)fd {
+  _masterFd = -1; // Borrowed alias only. No other method closes the descriptor.
+  if (_writeSource) {
+    dispatch_source_t source = _writeSource;
+    _writeSource = NULL;
+    dispatch_source_set_cancel_handler(source, ^{ close(fd); });
+    dispatch_source_cancel(source);
+    if (!_writeSourceResumed) dispatch_resume(source);
+    _writeSourceResumed = NO;
+#if !OS_OBJECT_USE_OBJC
+    dispatch_release(source);
+#endif
+  } else close(fd);
+}
+- (void)recordTransportError:(NSString *)message {
+  if ((_transportError == nil && message == nil) || [_transportError isEqual:message]) return;
+  [_transportError release]; _transportError = [message copy];
+  COTTerminalSession *session = [self retain];
+  NSString *owned = [message copy];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    id<COTTerminalDelegate> delegate = [session delegate];
+    if (owned && [delegate respondsToSelector:@selector(terminalSession:didEncounterTransportError:)])
+      [delegate terminalSession:session didEncounterTransportError:owned];
+    if ([delegate respondsToSelector:@selector(terminalSessionDidUpdateScreen:)])
+      [delegate terminalSessionDidUpdateScreen:session];
+    [owned release]; [session release];
+  });
+}
+- (BOOL)adoptTransportDescriptor:(int)descriptor {
+  __block BOOL adopted = NO;
+  [self withTransportOwner:^{
+    if (!_writer->open(descriptor, _allowsInput)) return;
+    _masterFd = descriptor;
+    int flags = fcntl(descriptor, F_GETFL, 0);
+    if (flags < 0 || fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) < 0) {
+      _writer->close();
+      [self recordTransportError:@"Terminal nonblocking transport setup failed."];
+      return;
+    }
+    const std::uint64_t generation = _writer->generation();
+    _writeSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_WRITE, descriptor, 0, _terminalQueue);
+    _writeSourceResumed = NO;
+    if (!_writeSource) {
+      _writer->close();
+      [self recordTransportError:@"Terminal writable-readiness setup failed."];
+      return;
+    }
+    COTWriterTarget *target = _writerTarget;
+    dispatch_source_set_event_handler(_writeSource, ^{ [target.session writerWritable:generation]; });
+    [self recordTransportError:nil];
+    adopted = YES;
+  }];
+  return adopted;
+}
+- (void)writerWritable:(std::uint64_t)generation {
+  _writer->writable(generation);
+  if (!_writer->error().empty())
+    [self recordTransportError:[NSString stringWithUTF8String:_writer->error().c_str()]];
+}
+- (COTTerminalEnqueueResult)enqueueOnOwner:(NSData *)data {
+  // Frozen Observe gate is duplicated by the writer's final drain policy.
+  cot::EnqueueResult result = !_allowsInput ? cot::EnqueueResult::Closed :
+    _writer->enqueue((const char *)[data bytes], [data length]);
+  NSString *message = nil;
+  if (!_writer->error().empty()) message = [NSString stringWithUTF8String:_writer->error().c_str()];
+  else if (result == cot::EnqueueResult::Backpressured) message = @"Terminal input queue is full; transaction was not accepted.";
+  else if (result == cot::EnqueueResult::Closed) message = @"Terminal input is closed or watching-only; transaction was not accepted.";
+  else if (result == cot::EnqueueResult::Failed) message = @"Terminal transport failed; transaction was not accepted.";
+  [self recordTransportError:message];
+  switch (result) {
+    case cot::EnqueueResult::Accepted: return COTTerminalEnqueueAccepted;
+    case cot::EnqueueResult::Backpressured: return COTTerminalEnqueueBackpressured;
+    case cot::EnqueueResult::Closed: return COTTerminalEnqueueClosed;
+    case cot::EnqueueResult::Failed: return COTTerminalEnqueueFailed;
+  }
+}
 - (void)writeReplyBytes:(const char *)bytes length:(std::size_t)length {
   if (!_allowsInput) return;
-#if !defined(_WIN32)
-  if (_masterFd >= 0 && length > 0) {
-    ssize_t total = 0;
-    while (total < (ssize_t)length) {
-      ssize_t written = write(_masterFd, bytes + total, length - total);
-      if (written <= 0) {
-        break;
-      }
-      total += written;
-    }
-  }
-#endif
+  NSData *data = [NSData dataWithBytes:bytes length:length];
+  [self withTransportOwner:^{ [self enqueueOnOwner:data]; }];
 }
 
 - (void)deliverTitle:(const std::string &)title {
@@ -382,10 +486,14 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 - (void)dealloc {
   _handle->session = nil;  // first: anything queued for the main thread now finds nothing
   [self terminate];
-  if (_terminalQueue != NULL) dispatch_sync(_terminalQueue, ^{
+  if (_terminalQueue != NULL) [self withTransportOwner:^{
+    _writerTarget.session = nil;
+    delete _writer; _writer = NULL;
     delete _grid;
     _grid = NULL;
-  });
+  }];
+  [_writerTarget release];
+  [_transportError release];
   [_configuration release];
   [_snapshotLock release];
   [_snapshot release];
@@ -407,6 +515,11 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   }
   return NO;
 #else
+  if (_masterFd >= 0) {
+    if (error) *error = [NSError errorWithDomain:COTTerminalErrorDomain code:3
+      userInfo:@{NSLocalizedDescriptionKey:@"Previous transport cleanup is required before restart."}];
+    return NO;
+  }
   struct winsize size;
   size.ws_col = (unsigned short)_columns;
   size.ws_row = (unsigned short)_rows;
@@ -455,11 +568,15 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     _exit(127);
   }
 
-  _masterFd = master;
   _childPid = pid;
+  if (![self adoptTransportDescriptor:master]) {
+    [self terminate];
+    if (error) *error = [NSError errorWithDomain:COTTerminalErrorDomain code:4
+      userInfo:@{NSLocalizedDescriptionKey:@"Terminal writable-readiness setup failed."}];
+    return NO;
+  }
   _running = YES;
   _exitDelivered = NO;
-  fcntl(_masterFd, F_SETFL, fcntl(_masterFd, F_GETFL, 0) | O_NONBLOCK);
   _readHandle = [[NSFileHandle alloc] initWithFileDescriptor:_masterFd closeOnDealloc:NO];
   [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(handleReadCompletion:)
@@ -471,6 +588,7 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 }
 
 - (void)handleReadCompletion:(NSNotification *)notification {
+  if ([notification object] != _readHandle) return; // Ignore a retired reader.
   NSData *data = [[notification userInfo] objectForKey:NSFileHandleNotificationDataItem];
   if (data == nil || [data length] == 0) {
     [self deliverChildExit];
@@ -523,10 +641,9 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     waitpid(_childPid, &status, WNOHANG);
     _childPid = -1;
   }
-  if (_masterFd >= 0) {
-    close(_masterFd);
-    _masterFd = -1;
-  }
+  if (_terminalQueue != NULL) [self withTransportOwner:^{
+    if (_writer) _writer->close();
+  }];
   _running = NO;
 }
 
@@ -637,20 +754,32 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   });
 }
 
-- (void)sendInput:(NSData *)data {
-  if (!_allowsInput) return;
-#if !defined(_WIN32)
-  if (_masterFd >= 0 && [data length] > 0) {
-    (void)write(_masterFd, [data bytes], [data length]);
-    if ([self viewportOffset] > 0) {
-      [self performGridMutation:^{
-        _grid->scrollToBottom();
-      } notify:YES];
-    }
+- (COTTerminalEnqueueResult)trySendInput:(NSData *)data {
+  // Refuse Observe/oversized input before copying mutable NSData.
+  if (!_allowsInput || [data length] > cot::TransportWriter::MaximumPendingBytes) {
+    __block COTTerminalEnqueueResult earlyResult;
+    [self withTransportOwner:^{
+      // Core checks policy/state/capacity before touching the data pointer.
+      earlyResult = [self enqueueOnOwner:data];
+    }];
+    return earlyResult;
   }
-#else
-  (void)data;
-#endif
+  NSData *owned = [data copy];
+  __block COTTerminalEnqueueResult result;
+  [self withTransportOwner:^{ result = [self enqueueOnOwner:owned]; }];
+  [owned release];
+  return result;
+}
+- (NSString *)transportError {
+  __block NSString *value = nil;
+  [self withTransportOwner:^{ value = [_transportError copy]; }];
+  return [value autorelease];
+}
+- (void)sendInput:(NSData *)data {
+  COTTerminalEnqueueResult result = [self trySendInput:data];
+  if (result == COTTerminalEnqueueAccepted && [self viewportOffset] > 0) {
+    [self performGridMutation:^{ _grid->scrollToBottom(); } notify:YES];
+  }
 }
 
 - (BOOL)allowsInput { return _allowsInput; }

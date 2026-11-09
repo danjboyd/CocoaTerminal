@@ -587,6 +587,15 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
       [cursorText drawAtPoint:NSMakePoint(cursorX, cursorY) withAttributes:cursorAttributes];
     }
   }
+  NSString *transportError = [_session transportError];
+  if ([transportError length]) {
+    [backgroundColor setFill];
+    NSRectFill(NSMakeRect(NSMinX([self bounds]), NSMinY([self bounds]), NSWidth([self bounds]), 22));
+    [transportError drawAtPoint:NSMakePoint(NSMinX([self bounds])+8, NSMinY([self bounds])+4)
+      withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:12],
+                       NSForegroundColorAttributeName:[NSColor redColor]}];
+  }
+
 }
 
 - (void)keyDown:(NSEvent *)event {
@@ -920,9 +929,8 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
   [normalized replaceOccurrencesOfString:@"\r\n" withString:@"\r" options:0 range:NSMakeRange(0, [normalized length])];
   [normalized replaceOccurrencesOfString:@"\n" withString:@"\r" options:0 range:NSMakeRange(0, [normalized length])];
   if ([_session isBracketedPasteEnabled]) {
-    [_session sendInput:[@"\033[200~" dataUsingEncoding:NSUTF8StringEncoding]];
-    [_session sendInput:[normalized dataUsingEncoding:NSUTF8StringEncoding]];
-    [_session sendInput:[@"\033[201~" dataUsingEncoding:NSUTF8StringEncoding]];
+    NSString *transaction = [NSString stringWithFormat:@"\033[200~%@\033[201~", normalized];
+    [_session sendInput:[transaction dataUsingEncoding:NSUTF8StringEncoding]];
   } else {
     [_session sendInput:[normalized dataUsingEncoding:NSUTF8StringEncoding]];
   }
@@ -1387,6 +1395,9 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
   [self scheduleScreenUpdate];
 }
 
+- (void)terminalSession:(COTTerminalSession *)session didEncounterTransportError:(NSString *)message {
+  (void)session; (void)message; [self setNeedsDisplay:YES];
+}
 - (void)terminalSession:(COTTerminalSession *)session didExitWithStatus:(int)status {
   (void)session;
   [[NSNotificationCenter defaultCenter] postNotificationName:COTTerminalViewDidExitNotification

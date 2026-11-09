@@ -1,0 +1,13 @@
+# Local observer hook review (goal 305)
+
+Base: 3b3f04251cc13614f6733355fc5f58d4fa2b18ed. This isolated patch adds reusable source hooks; no live target or hold authority is implied.
+
+Configuration defaults remain Interactive / FollowView / 80 columns / 24 rows. An observing host must explicitly choose Observe + FixedGrid and supply known dimensions. Unknown live dimensions must remain unknown, never substituted with these generic defaults. Nil configuration, unknown input/sizing policies or dimensions outside 1...1000 reject session construction. Policies are frozen for the session lifetime; later mutations or copied configurations cannot promote a session or resize a fixed grid. A host must create a separate, explicitly authorized session to change authority.
+
+Observe denies both public input and parser reply transport writes. Clipboard protocol reads/writes and local user copy/paste are separately denied before pasteboard access. Selection/scrolling stay local. A host must label this minimum mode as copy/paste unavailable. It must not advertise local copy support. FixedGrid resize calls are intentional no-ops, preserving parser and PTY dimensions through viewport/zoom changes. View bounds do not determine a fixed grid.
+
+Output-only `ingestOutputData:` accepts data only for an Observe session; it parses on the terminal queue and publishes snapshots. This supports synthetic output without spawning a child. It does not create a live transport or authenticate a source. Observe does not turn an arbitrary process start into a safe observer: a command's own effects are the host's responsibility.
+
+Validation: core, theme and observer CTest executables pass on GNUstep. Observer transport tests inject a disposable PTY pair without a child; parser queries/OSC52/input produce zero slave bytes and zero pasteboard accesses. Private Objective-C pasteboard spy prevents actual clipboard access. Invalid config/policies/dimensions, config mutation/copy, parser grid dimensions and kernel PTY dimensions are checked. Scratch AppKit test (`CocoaTerminalObserverTests --gui`) covers selection/copy/paste actions, key shortcuts, mouse-report helper, focus, negative non-square bounds and zoom. Xvfb and defaults are disposable. Theme test now checks each platform's existing font default.
+
+These hooks do not fix existing partial-write buffering, child reaping/termination, session recovery or Windows ConPTY prerequisites. Interactive embedding requires separate review and tests for those issues. No SSH, live agent, takeover, hub/node hold, upstream post, push or deployment was performed.

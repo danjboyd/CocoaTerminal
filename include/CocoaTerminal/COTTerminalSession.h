@@ -27,7 +27,15 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSUInteger cursorRow;
 @property (nonatomic, readonly, getter=isCursorVisible) BOOL cursorVisible;
 
-- (instancetype)initWithConfiguration:(COTTerminalConfiguration *)configuration NS_DESIGNATED_INITIALIZER;
+// Immutable lifetime policies. Observe denies transport writes AND clipboard
+// protocols/local copy/paste; selection and scrolling remain local.
+@property (nonatomic, readonly) BOOL allowsInput;
+@property (nonatomic, readonly) BOOL allowsLocalCopy;
+@property (nonatomic, readonly) BOOL fixedGrid;
+// Output-only ingestion for an Observe session without starting a child.
+- (void)ingestOutputData:(NSData *)data;
+
+- (nullable instancetype)initWithConfiguration:(COTTerminalConfiguration *)configuration NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
 - (BOOL)startWithError:(NSError **)error;

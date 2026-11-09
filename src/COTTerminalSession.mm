@@ -249,7 +249,10 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
       },
       [writerSelf](int, std::uint64_t) { [writerSelf setWritableEnabled:YES]; },
       [writerSelf]() { [writerSelf setWritableEnabled:NO]; },
-      [writerSelf](int fd) { [writerSelf retireWriterDescriptor:fd]; }
+      [writerSelf](int fd) { [writerSelf retireWriterDescriptor:fd]; },
+      [writerSelf](std::uint64_t generation, std::uint64_t ticket) {
+        [writerSelf scheduleWriterContinuation:generation ticket:ticket];
+      }
     });
     _snapshotLock = [[NSLock alloc] init];
     _handle = [[COTSessionHandle alloc] init];
@@ -373,6 +376,15 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     adopted = YES;
   }];
   return adopted;
+}
+- (void)scheduleWriterContinuation:(std::uint64_t)generation ticket:(std::uint64_t)ticket {
+  COTWriterTarget *target = _writerTarget;
+  dispatch_async(_terminalQueue, ^{ [target.session writerContinue:generation ticket:ticket]; });
+}
+- (void)writerContinue:(std::uint64_t)generation ticket:(std::uint64_t)ticket {
+  _writer->resume(generation, ticket);
+  if (!_writer->error().empty())
+    [self recordTransportError:[NSString stringWithUTF8String:_writer->error().c_str()]];
 }
 - (void)writerWritable:(std::uint64_t)generation {
   _writer->writable(generation);

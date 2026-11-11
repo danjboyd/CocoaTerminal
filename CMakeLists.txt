@@ -135,6 +135,13 @@ if(COCOATERMINAL_BUILD_TESTS AND NOT WIN32)
   set_target_properties(CocoaTerminalObserverTests PROPERTIES LINKER_LANGUAGE OBJCXX)
   target_link_libraries(CocoaTerminalObserverTests PRIVATE CocoaTerminal::CocoaTerminal)
   add_test(NAME CocoaTerminalObserverTests COMMAND CocoaTerminalObserverTests)
+
+  # Local disposable children only (each case has a 5 s alarm); no SSH/GUI/clipboard.
+  add_executable(CocoaTerminalChildTests tests/COTSessionChildTests.mm)
+  set_target_properties(CocoaTerminalChildTests PROPERTIES LINKER_LANGUAGE OBJCXX)
+  target_link_libraries(CocoaTerminalChildTests PRIVATE CocoaTerminal::CocoaTerminal)
+  add_test(NAME CocoaTerminalChildTests COMMAND CocoaTerminalChildTests)
+  set_tests_properties(CocoaTerminalChildTests PROPERTIES TIMEOUT 25)
 endif()
 
 if(COCOATERMINAL_BUILD_TESTS)

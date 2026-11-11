@@ -80,6 +80,20 @@ int main(int argc, char **argv) {
   expect(session.columns == 37 && session.rows == 11 && size.ws_col == 37 && size.ws_row == 11, "fixed grid/PTY changed");
   expect([session clipboardWriteCount] == 0 && [session lastClipboardWrite] == nil, "output published clipboard content");
   char bytes[64]; expect(read(slave, bytes, sizeof(bytes)) < 0, "observer wrote transport bytes");
+  // -poll from the terminal queue itself is refused (no re-entrant read, no
+  // deadlock) and reported; from outside the queue it still works.
+  {
+    Ivar ivar = class_getInstanceVariable([COTTerminalSession class], "_terminalQueue");
+    dispatch_queue_t queue = *(dispatch_queue_t *)((char *)session + ivar_getOffset(ivar));
+    __block BOOL returned = NO;
+    alarm(5);  // a deadlock fails the test instead of hanging it
+    dispatch_sync(queue, ^{ [session poll]; returned = YES; });
+    alarm(0);
+    expect(returned, "poll on the owner queue did not return");
+    expect([session.transportError rangeOfString:@"-poll"].location != NSNotFound, "poll on the owner queue was not reported");
+    [session poll];
+    drainParser(session);
+  }
   close(slave); [session release]; [copy release];
   for (int invalid = 0; invalid < 6; ++invalid) {
     COTTerminalConfiguration *bad = [config copy];

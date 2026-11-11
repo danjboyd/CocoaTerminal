@@ -28,10 +28,13 @@ typedef NS_ENUM(NSInteger, COTTerminalEnqueueResult) {
 - (void)terminalSession:(COTTerminalSession *)session didChangeTitle:(NSString *)title;
 @end
 
+// Threading: every delegate callback is delivered on the main queue
+// (didExitWithStatus: and didLoseChildWithError: included, since patch B).
 @interface COTTerminalSession : NSObject
 
 @property (nonatomic, readonly, copy) COTTerminalConfiguration *configuration;
 @property (nonatomic, assign, nullable) id<COTTerminalDelegate> delegate;
+// YES from a successful start until the child exits, is lost, or terminate.
 @property (nonatomic, readonly, getter=isRunning) BOOL running;
 @property (nonatomic, readonly) NSUInteger columns;
 @property (nonatomic, readonly) NSUInteger rows;
@@ -54,9 +57,14 @@ typedef NS_ENUM(NSInteger, COTTerminalEnqueueResult) {
 // reader and writer cancelled, child reaped or reported lost).
 - (BOOL)startWithError:(NSError **)error;
 // SIGHUP once to the direct child (no group signal, no escalation), then retire
-// the transport. The child stays owned and is reaped in the background.
+// the transport. isRunning becomes NO immediately; the child stays owned and is
+// reaped in the background, and didExitWithStatus: still follows when it is.
+// isCleanupComplete says when the fd is closed and the child reaped.
 - (void)terminate;
 // Compatibility: read what is ready and reap once, through the single reader.
+// Synchronous on the terminal queue; never call it from that queue (from a
+// delegate or parser callback running there): such a call is refused and
+// reported in transportError.
 - (void)poll;
 // YES when no fd, child or pending cancellation remains from the last run.
 @property (nonatomic, readonly, getter=isCleanupComplete) BOOL cleanupComplete;

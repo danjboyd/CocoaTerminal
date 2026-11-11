@@ -362,6 +362,11 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   if (enabled) dispatch_resume(_writeSource); else dispatch_suspend(_writeSource);
   _writeSourceResumed = enabled;
 }
+// Retired dispatch sources are released with dispatch_release unconditionally:
+// this library is built without ARC (manual retain/release throughout), where
+// dispatch_release is valid whether or not dispatch objects are Objective-C
+// objects (OS_OBJECT_USE_OBJC). The previous #if !OS_OBJECT_USE_OBJC guard
+// leaked every retired source on Apple platforms. Do not build this file as ARC.
 // The writer is done with the descriptor. Patch B: it no longer closes it; its
 // WRITE source's cancellation acknowledges to the lifecycle, which closes the fd
 // once, after the READ source has acknowledged too.
@@ -827,14 +832,22 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 
 // Compatibility: asks the owner to make progress now (read what is ready, reap
 // once). It is not a second reader; it runs the same generation-checked path.
+// It must be called from outside the terminal queue: from the owner itself it
+// would be a re-entrant read inside a READ-source or parser callback, so it is
+// refused (visibly, as a transport error) instead of reading or blocking.
 - (void)poll {
 #if !defined(_WIN32)
   if (_terminalQueue == NULL || _native == NULL) return;
-  [self withTransportOwner:^{
+  if (dispatch_get_specific(&COTTerminalOwnerKey) == self) {
+    NSLog(@"CocoaTerminal: -poll called on the terminal queue; ignored.");
+    [self recordTransportError:@"-poll was called on the terminal queue and was ignored."];
+    return;
+  }
+  dispatch_sync(_terminalQueue, ^{
     cot::SessionLifecycle *life = (*_native)->life.get();
     life->readable(life->generation());
     life->reap(life->generation());
-  }];
+  });
 #endif
 }
 

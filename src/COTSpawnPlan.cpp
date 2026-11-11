@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "COTSpawnPlan.h"
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <poll.h>
@@ -16,6 +17,17 @@ bool IsExecutableFile(const std::string &path) {
   struct stat info;
   return stat(path.c_str(), &info) == 0 && S_ISREG(info.st_mode) && access(path.c_str(), X_OK) == 0;
 }
+}
+
+bool SpawnPlan::IsWithheldVariable(const std::string &name) {
+  static const char *const exact[] = {"TMUX", "TMUX_PANE", "STY", "WINDOWID"};
+  for (const char *candidate : exact) if (name == candidate) return true;
+  if (name.compare(0, 6, "AIMGR_") == 0) return true;
+  for (const char *suffix : {"_TOKEN", "_SECRET", "_KEY"}) {
+    const std::size_t length = std::char_traits<char>::length(suffix);
+    if (name.size() > length && name.compare(name.size() - length, length, suffix) == 0) return true;
+  }
+  return false;
 }
 
 SpawnPlan SpawnPlan::Make(const std::vector<std::string> &command,
@@ -45,6 +57,9 @@ SpawnPlan SpawnPlan::Make(const std::vector<std::string> &command,
       if (NameOf(existing) == item.first) { existing = entry; replaced = true; }
     if (!replaced) plan.env_.push_back(entry);
   }
+  plan.env_.erase(std::remove_if(plan.env_.begin(), plan.env_.end(),
+                                 [](const std::string &entry) { return IsWithheldVariable(NameOf(entry)); }),
+                  plan.env_.end());
 
   if (!workingDirectory.empty()) {
     struct stat info;

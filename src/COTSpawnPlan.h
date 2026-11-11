@@ -15,12 +15,18 @@ class SpawnPlan {
  public:
   // command[0] is resolved like execvp (PATH from the child's final
   // environment; a name containing '/' is used as given). The environment is
-  // `inherited`, then each override in order (replacing by name). An empty
+  // `inherited`, then each override in order (replacing by name), minus every
+  // name IsWithheldVariable() matches, from either source. An empty
   // workingDirectory means "inherit the parent's".
   static SpawnPlan Make(const std::vector<std::string> &command,
                         const std::vector<std::string> &inherited,
                         const std::vector<std::pair<std::string, std::string>> &overrides,
                         const std::string &workingDirectory);
+  // Never passed to a terminal child: the multiplexer/window markers TMUX,
+  // TMUX_PANE, STY and WINDOWID, AIManager's own AIMGR_* variables, and any
+  // name ending in _TOKEN, _SECRET or _KEY, so the host app's credentials can't
+  // leak into a shell started from a pane.
+  static bool IsWithheldVariable(const std::string &name);
   bool ok() const { return problem_.empty(); }
   const std::string &problem() const { return problem_; }  // why it was rejected before fork
   const std::string &executable() const { return executable_; }

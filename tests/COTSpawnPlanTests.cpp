@@ -78,6 +78,18 @@ int main() {
     EXPECT(std::string(argv[0]) == "/bin/sh" && argv[1] == nullptr, "argv terminated");
   }
 
+  // 2b. Withheld variables never reach the plan, whether inherited or configured.
+  {
+    SpawnPlan plan = SpawnPlan::Make({"/bin/sh"},
+        {"PATH=/bin:/usr/bin", "TMUX=/tmp/t,1,0", "TMUX_PANE=%1", "STY=1.pts", "WINDOWID=7", "AIMGR_AGENT=x",
+         "GITHUB_TOKEN=t", "AWS_SECRET=s", "API_KEY=k", "KEYBOARD=us", "TOKEN=plain", "LANG=C.UTF-8"},
+        {{"AIMGR_HUB", "h"}, {"MY_SECRET", "s"}, {"KEEP", "1"}}, "");
+    std::vector<std::string> want{"PATH=/bin:/usr/bin", "KEYBOARD=us", "TOKEN=plain", "LANG=C.UTF-8", "KEEP=1"};
+    EXPECT(plan.ok() && plan.environment() == want, "withheld variables dropped");
+    EXPECT(SpawnPlan::IsWithheldVariable("AIMGR_") && !SpawnPlan::IsWithheldVariable("_KEY") &&
+           !SpawnPlan::IsWithheldVariable("AIMGR") && !SpawnPlan::IsWithheldVariable("KEYS"), "name rules");
+  }
+
   // 3. PATH search from the child's final environment, like execvp.
   {
     WriteFile(dir + "/cot-probe-685", "#!/bin/sh\nexit 5\n", 0755);

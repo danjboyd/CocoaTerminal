@@ -251,9 +251,14 @@ int main() {
     EXPECT(c == 0 && PtyFdCount() == 0, "no child or PTY for a refused start");
     // The child gets the configured environment and TERM, built before fork.
     COTChildProbe *probe = [[COTChildProbe new] autorelease];
-    config.shellCommand = @[@"/bin/sh", @"-c", @"printf \"[$COT_PLAN_685:$TERM:$COLORTERM]\"; exit 0"];
+    setenv("TMUX", "/tmp/cot-tmux,1,0", 1);
+    setenv("AIMGR_COT_685", "leak", 1);
+    setenv("COT_685_TOKEN", "leak", 1);
+    config.shellCommand = @[@"/bin/sh", @"-c",
+      @"printf \"[$COT_PLAN_685:$TERM:$COLORTERM]{${TMUX-unset}:${AIMGR_COT_685-unset}:${COT_685_TOKEN-unset}:${AIMGR_FROM_CONFIG-unset}}\"; exit 0"];
     NSMutableDictionary *env = [[config.environment mutableCopy] autorelease];
     env[@"COT_PLAN_685"] = @"planned";
+    env[@"AIMGR_FROM_CONFIG"] = @"leak";
     config.environment = env;
     COTTerminalSession *planned = [[COTTerminalSession alloc] initWithConfiguration:config];
     planned.delegate = probe;
@@ -261,6 +266,9 @@ int main() {
     EXPECT(Spin(^{ return (BOOL)(probe.exits == 1 && planned.cleanupComplete); }, 3.0), "planned child finished");
     EXPECT([Screen(planned) rangeOfString:@"[planned:xterm-256color:truecolor]"].location != NSNotFound,
            "child environment: " << [Screen(planned) UTF8String]);
+    EXPECT([Screen(planned) rangeOfString:@"{unset:unset:unset:unset}"].location != NSNotFound,
+           "withheld variables reached the child: " << [Screen(planned) UTF8String]);
+    unsetenv("TMUX"); unsetenv("AIMGR_COT_685"); unsetenv("COT_685_TOKEN");
     [planned release]; [missing release]; [session release];
   }
 

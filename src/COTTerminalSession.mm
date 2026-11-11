@@ -9,6 +9,7 @@
 #include "COTTerminalGrid.h"
 #include "COTTransportWriter.h"
 #include "COTSessionLifecycle.h"
+#include "COTSpawnPlan.h"
 
 #import <dispatch/dispatch.h>
 
@@ -21,6 +22,14 @@
 #include <time.h>
 
 #include <algorithm>
+#if defined(__APPLE__)
+#include <crt_externs.h>
+#define COTEnviron (*_NSGetEnviron())
+#else
+extern char **environ;
+#define COTEnviron environ
+#endif
+
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -60,6 +69,19 @@ static std::mutex COTLifecycleRegistryLock;
 static std::vector<std::weak_ptr<COTLifecycleNative>> &COTLifecycleRegistry() {
   static std::vector<std::weak_ptr<COTLifecycleNative>> registry;
   return registry;
+}
+// The startup pipe must not leak into the child's exec'd program: close-on-exec.
+// Linux/BSD set it atomically; elsewhere fcntl right after pipe.
+static BOOL COTCloseOnExecPipe(int fds[2]) {
+#if defined(__linux__) || defined(__FreeBSD__)
+  return pipe2(fds, O_CLOEXEC) == 0;
+#else
+  if (pipe(fds) != 0) return NO;
+  if (fcntl(fds[0], F_SETFD, FD_CLOEXEC) != 0 || fcntl(fds[1], F_SETFD, FD_CLOEXEC) != 0) {
+    close(fds[0]); close(fds[1]); return NO;
+  }
+  return YES;
+#endif
 }
 static double COTMonotonicSeconds() {
   struct timespec now;
@@ -115,6 +137,7 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   cot::TransportWriter *_writer;
   dispatch_source_t _writeSource;
   BOOL _writeSourceResumed;
+  std::uint64_t _writerSourceGeneration;
   COTWriterTarget *_writerTarget;
   NSString *_transportError;
   int _masterFd;
@@ -358,9 +381,32 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   else dispatch_sync(_terminalQueue, block);
 }
 - (void)setWritableEnabled:(BOOL)enabled {
+  // The WRITE source is created lazily, on the first EAGAIN of a generation.
+  // A source that is created up front but never armed must be resumed just to
+  // be cancelled, and doing that while a PTY hang-up floods the shared fd
+  // crashed the GNUstep libdispatch epoll manager (_dispatch_event_merge_hangup,
+  // reproduced natively in goal 693). Most sessions never arm it at all.
+  if (enabled && !_writeSource) {
+    const int fd = _writer ? _writer->descriptor() : -1;
+    dispatch_source_t source = fd >= 0 ? dispatch_source_create(DISPATCH_SOURCE_TYPE_WRITE, fd, 0, _terminalQueue) : NULL;
+    if (!source) {
+      [self recordTransportError:@"Terminal writable-readiness setup failed."];
+      COTWriterTarget *target = _writerTarget;
+      dispatch_async(_terminalQueue, ^{ [target.session closeWriterAfterReadinessFailure:_writerSourceGeneration]; });
+      return;
+    }
+    const std::uint64_t generation = _writerSourceGeneration;
+    COTWriterTarget *target = _writerTarget;
+    dispatch_source_set_event_handler(source, ^{ [target.session writerWritable:generation]; });
+    _writeSource = source;
+    _writeSourceResumed = NO;
+  }
   if (!_writeSource || enabled == _writeSourceResumed) return;
   if (enabled) dispatch_resume(_writeSource); else dispatch_suspend(_writeSource);
   _writeSourceResumed = enabled;
+}
+- (void)closeWriterAfterReadinessFailure:(std::uint64_t)generation {
+  if (_writer && _writer->generation() == generation && _writer->descriptor() >= 0) _writer->close();
 }
 // Retired dispatch sources are released with dispatch_release unconditionally:
 // this library is built without ARC (manual retain/release throughout), where
@@ -588,16 +634,9 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
       [self recordTransportError:@"Terminal nonblocking transport setup failed."];
       return;
     }
-    const std::uint64_t generation = _writer->generation();
-    _writeSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_WRITE, descriptor, 0, _terminalQueue);
+    _writerSourceGeneration = _writer->generation();  // its WRITE source is made on first EAGAIN
+    _writeSource = NULL;
     _writeSourceResumed = NO;
-    if (!_writeSource) {
-      _writer->close();
-      [self recordTransportError:@"Terminal writable-readiness setup failed."];
-      return;
-    }
-    COTWriterTarget *target = _writerTarget;
-    dispatch_source_set_event_handler(_writeSource, ^{ [target.session writerWritable:generation]; });
     [self recordTransportError:nil];
     adopted = YES;
   }();
@@ -768,11 +807,43 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   size.ws_xpixel = 0;
   size.ws_ypixel = 0;
 
+  // Prereq F: everything the child needs is built here, before fork. The child
+  // then runs only chdir/execve/write/_exit (cot::SpawnPlan::execInChild).
+  NSArray<NSString *> *command = _configuration.shellCommand;
+  std::vector<std::string> argv;
+  for (NSString *argument in command) argv.push_back([argument fileSystemRepresentation]);
+  if (argv.empty()) argv.push_back("/bin/sh");  // as before: an empty command ran /bin/sh
+  std::vector<std::string> inherited;
+  for (char **entry = COTEnviron; entry && *entry; ++entry) inherited.push_back(*entry);
+  std::vector<std::pair<std::string, std::string>> overrides;
+  NSDictionary<NSString *, NSString *> *environment = _configuration.environment;
+  for (NSString *key in [[environment allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
+    NSString *value = [environment objectForKey:key];
+    if ([key length] > 0 && value != nil) overrides.push_back({[key UTF8String], [value UTF8String]});
+  }
+  if ([_configuration.terminalType length] > 0) overrides.push_back({"TERM", [_configuration.terminalType UTF8String]});
+  overrides.push_back({"COLORTERM", "truecolor"});
+  std::string cwd = [_configuration.workingDirectory length] > 0 ? [_configuration.workingDirectory fileSystemRepresentation] : "";
+  cot::SpawnPlan plan = cot::SpawnPlan::Make(argv, inherited, overrides, cwd);
+  if (!plan.ok()) {
+    if (error) *error = [NSError errorWithDomain:COTTerminalErrorDomain code:5
+      userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithUTF8String:plan.problem().c_str()]}];
+    return NO;
+  }
+  int startup[2] = {-1, -1};
+  if (!COTCloseOnExecPipe(startup)) {
+    if (error) *error = [NSError errorWithDomain:COTTerminalErrorDomain code:1
+      userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Startup pipe failed: %s", strerror(errno)]}];
+    return NO;
+  }
+
   int master = -1;
   pid_t pid = forkpty(&master, NULL, NULL, &size);
   if (pid < 0) {
+    const int forkError = errno;
+    close(startup[0]); close(startup[1]);
     if (error != NULL) {
-      NSString *message = [NSString stringWithFormat:@"forkpty failed: %s", strerror(errno)];
+      NSString *message = [NSString stringWithFormat:@"forkpty failed: %s", strerror(forkError)];
       *error = [NSError errorWithDomain:COTTerminalErrorDomain
                                    code:1
                                userInfo:@{NSLocalizedDescriptionKey: message}];
@@ -781,40 +852,30 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   }
 
   if (pid == 0) {
-    NSDictionary<NSString *, NSString *> *environment = _configuration.environment;
-    for (NSString *key in environment) {
-      NSString *value = [environment objectForKey:key];
-      if ([key length] > 0 && value != nil) {
-        setenv([key UTF8String], [value UTF8String], 1);
-      }
-    }
-    if ([_configuration.terminalType length] > 0) {
-      setenv("TERM", [[_configuration terminalType] UTF8String], 1);
-    }
-    setenv("COLORTERM", "truecolor", 1);
-
-    if ([_configuration.workingDirectory length] > 0 &&
-        chdir([_configuration.workingDirectory fileSystemRepresentation]) != 0) {
-      _exit(126);
-    }
-
-    NSArray<NSString *> *command = _configuration.shellCommand;
-    NSString *launchPath = [command count] > 0 ? [command objectAtIndex:0] : @"/bin/sh";
-    NSUInteger argc = [command count];
-    char **argv = static_cast<char **>(calloc(argc + 1, sizeof(char *)));
-    for (NSUInteger index = 0; index < argc; ++index) {
-      argv[index] = strdup([[command objectAtIndex:index] fileSystemRepresentation]);
-    }
-    argv[argc] = NULL;
-    execvp([launchPath fileSystemRepresentation], argv);
-    _exit(127);
+    close(startup[0]);
+    plan.execInChild(startup[1]);  // [[noreturn]]
   }
+
+  close(startup[1]);
+  cot::SpawnFailure failure{0, 0};
+  // Bounded: EOF arrives as soon as execve succeeds; never wait more than 2 s.
+  const cot::SpawnRead startupResult = cot::ReadSpawnFailure(startup[0], 2000, failure);
+  close(startup[0]);
 
   _childPid = pid;  // Informational; the lifecycle owns the PID until reaped.
   NSString *problem = nil;
   if (![self beginTransport:master pid:pid error:&problem]) {
     if (error) *error = [NSError errorWithDomain:COTTerminalErrorDomain code:4
       userInfo:@{NSLocalizedDescriptionKey:problem ?: @"Terminal transport setup failed."}];
+    return NO;
+  }
+  if (startupResult == cot::SpawnRead::Failed) {
+    // The child reported chdir/execve failure and is exiting: the lifecycle
+    // retires the transport and reaps it; the caller gets the precise reason.
+    [self terminate];
+    if (error) *error = [NSError errorWithDomain:COTTerminalErrorDomain code:6
+      userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Could not start %s: %s failed: %s",
+        plan.executable().c_str(), failure.stage == cot::SpawnStageChdir ? "chdir" : "execve", strerror(failure.error)]}];
     return NO;
   }
   _running = YES;

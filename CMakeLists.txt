@@ -32,6 +32,7 @@ add_library(CocoaTerminal
   src/COTTerminalGrid.cpp
   src/COTTransportWriter.cpp
   src/COTSessionLifecycle.cpp
+  src/COTSpawnPlan.cpp
   src/COTTerminalSession.mm
   src/COTTerminalTheme.mm
   src/COTTerminalView.mm
@@ -155,6 +156,15 @@ if(COCOATERMINAL_BUILD_TESTS)
   target_include_directories(CocoaTerminalLifecycleTests PRIVATE src)
   target_compile_features(CocoaTerminalLifecycleTests PRIVATE cxx_std_17)
   add_test(NAME CocoaTerminalLifecycleTests COMMAND CocoaTerminalLifecycleTests)
+endif()
+
+if(COCOATERMINAL_BUILD_TESTS AND NOT WIN32)
+  # Plain fork() children in a scratch dir (5 s alarm); no PTY/SSH/GUI/clipboard.
+  add_executable(CocoaTerminalSpawnTests tests/COTSpawnPlanTests.cpp src/COTSpawnPlan.cpp)
+  target_include_directories(CocoaTerminalSpawnTests PRIVATE src)
+  target_compile_features(CocoaTerminalSpawnTests PRIVATE cxx_std_17)
+  add_test(NAME CocoaTerminalSpawnTests COMMAND CocoaTerminalSpawnTests)
+  set_tests_properties(CocoaTerminalSpawnTests PROPERTIES TIMEOUT 15)
 endif()
 
 if(COCOATERMINAL_BUILD_TESTS)

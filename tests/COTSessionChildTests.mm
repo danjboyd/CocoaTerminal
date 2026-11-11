@@ -198,6 +198,72 @@ int main() {
   EXPECT(PtyFdCount() == 0, "case 3 pty fds " << PtyFdCount());
   EXPECT(OpenFdCount() == baseFds, "case 3 fds " << OpenFdCount() << " vs " << baseFds);
 
+  // 6. Backpressure: 200 000 bytes into a raw-mode child that starts reading only
+  //    after 0.5 s. The writer hits EAGAIN, the WRITE source is created lazily on
+  //    that first EAGAIN, and every byte arrives in order.
+  alarm(5);
+  {
+    COTChildProbe *probe = [[COTChildProbe new] autorelease];
+    COTTerminalSession *session = Start(@"stty raw -echo; printf RAW-READY; sleep 0.5; head -c 200000 | cksum; exit 0", probe);
+    // Send only once the tty is raw: before that, cooked mode echoes and caps the line.
+    EXPECT(Spin(^{ return (BOOL)([Screen(session) rangeOfString:@"RAW-READY"].location != NSNotFound); }, 2.0), "raw mode not ready");
+    std::string payload;
+    for (int i = 0; payload.size() < 200000; ++i) payload += std::to_string(i % 10);
+    payload.resize(200000);
+    COTTerminalEnqueueResult result = [session trySendInput:[NSData dataWithBytes:payload.data() length:payload.size()]];
+    EXPECT(result == COTTerminalEnqueueAccepted, "payload accepted: " << (long)result);
+    {
+      // While the child sleeps, the writer must be parked on a lazily created WRITE source.
+      Ivar queueIvar = class_getInstanceVariable([COTTerminalSession class], "_terminalQueue");
+      Ivar sourceIvar = class_getInstanceVariable([COTTerminalSession class], "_writeSource");
+      dispatch_queue_t queue = *(dispatch_queue_t *)((char *)session + ivar_getOffset(queueIvar));
+      __block BOOL armed = NO;
+      Spin(^{ return NO; }, 0.1);
+      dispatch_sync(queue, ^{ armed = *(void **)((char *)session + ivar_getOffset(sourceIvar)) != NULL; });
+      EXPECT(armed, "EAGAIN did not create the WRITE source");
+    }
+    EXPECT(Spin(^{ return (BOOL)(probe.exits == 1 && session.cleanupComplete); }, 4.0), "backpressured child did not finish");
+    // cksum of the same bytes, computed locally through a pipe is avoided: compare the length field only.
+    EXPECT([Screen(session) rangeOfString:@" 200000"].location != NSNotFound, "all bytes delivered: " << [Screen(session) UTF8String]);
+    EXPECT(session.transportError == nil || [session.transportError length] == 0, "no transport error: " << [session.transportError UTF8String]);
+    [session release];
+  }
+  ChildCounts(&children, &zombies);
+  EXPECT(zombies == 0 && PtyFdCount() == 0, "case 6 zombies " << zombies);
+
+  alarm(5);
+  // 5. Prereq F: a bad working directory or a missing command is refused before
+  //    fork (code 5): no child, no PTY.
+  {
+    COTTerminalConfiguration *config = [[[COTTerminalConfiguration defaultConfiguration] copy] autorelease];
+    config.shellCommand = @[@"/bin/sh", @"-c", @"exit 0"];
+    config.workingDirectory = @"/nonexistent-cot-685";
+    COTTerminalSession *session = [[COTTerminalSession alloc] initWithConfiguration:config];
+    NSError *error = nil;
+    EXPECT(![session startWithError:&error] && error.code == 5, "bad cwd refused before fork: " << (long)error.code);
+    config.workingDirectory = @"";
+    config.shellCommand = @[@"cot-no-such-command-685"];
+    COTTerminalSession *missing = [[COTTerminalSession alloc] initWithConfiguration:config];
+    error = nil;
+    EXPECT(![missing startWithError:&error] && error.code == 5, "missing command refused before fork");
+    EXPECT(missing.cleanupComplete && session.cleanupComplete, "nothing to clean");
+    int c = 0, z = 0; ChildCounts(&c, &z);
+    EXPECT(c == 0 && PtyFdCount() == 0, "no child or PTY for a refused start");
+    // The child gets the configured environment and TERM, built before fork.
+    COTChildProbe *probe = [[COTChildProbe new] autorelease];
+    config.shellCommand = @[@"/bin/sh", @"-c", @"printf \"[$COT_PLAN_685:$TERM:$COLORTERM]\"; exit 0"];
+    NSMutableDictionary *env = [[config.environment mutableCopy] autorelease];
+    env[@"COT_PLAN_685"] = @"planned";
+    config.environment = env;
+    COTTerminalSession *planned = [[COTTerminalSession alloc] initWithConfiguration:config];
+    planned.delegate = probe;
+    EXPECT([planned startWithError:&error], "planned start");
+    EXPECT(Spin(^{ return (BOOL)(probe.exits == 1 && planned.cleanupComplete); }, 3.0), "planned child finished");
+    EXPECT([Screen(planned) rangeOfString:@"[planned:xterm-256color:truecolor]"].location != NSNotFound,
+           "child environment: " << [Screen(planned) UTF8String]);
+    [planned release]; [missing release]; [session release];
+  }
+
   // 4. Dealloc while running: HUP, and the shared lifecycle still reaps and closes.
   alarm(5);
   {

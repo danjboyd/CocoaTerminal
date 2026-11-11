@@ -8,6 +8,7 @@
 
 #include "COTTerminalGrid.h"
 #include "COTTransportWriter.h"
+#include "COTSessionLifecycle.h"
 
 #import <dispatch/dispatch.h>
 
@@ -17,6 +18,13 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <time.h>
+
+#include <algorithm>
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <vector>
 
 #if defined(__APPLE__) || defined(__linux__) || defined(__FreeBSD__)
 #include <pty.h>
@@ -29,6 +37,35 @@ static char COTTerminalOwnerKey;
 @implementation COTWriterTarget
 @synthesize session;
 @end
+
+// Patch B (goal 685): the lifecycle core plus its native sources. Shared by the
+// session and by its dispatch handlers, so an owned child is still reaped, and
+// the fd still closed after both cancellations, if the session goes first. All
+// fields except `clean` are confined to the terminal serial owner.
+struct COTLifecycleNative {
+  std::unique_ptr<cot::SessionLifecycle> life;
+  dispatch_queue_t queue;
+  dispatch_source_t read = NULL;
+  dispatch_source_t reaper = NULL;
+  bool writeAckPending = false;
+  COTWriterTarget *target;
+  std::atomic<bool> clean{true};
+  COTLifecycleNative(dispatch_queue_t q, COTWriterTarget *t) : queue(q), target([t retain]) { dispatch_retain(queue); }
+  ~COTLifecycleNative() { [target release]; dispatch_release(queue); }
+};
+
+// Live lifecycles, for +shutdownAllSessionsWithTimeout:. An expired entry has
+// released every source, so it owns no fd, child or pending cancellation.
+static std::mutex COTLifecycleRegistryLock;
+static std::vector<std::weak_ptr<COTLifecycleNative>> &COTLifecycleRegistry() {
+  static std::vector<std::weak_ptr<COTLifecycleNative>> registry;
+  return registry;
+}
+static double COTMonotonicSeconds() {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return (double)now.tv_sec + (double)now.tv_nsec / 1e9;
+}
 
 static NSString *const COTTerminalErrorDomain = @"COTTerminalErrorDomain";
 static NSUInteger const COTTerminalMaximumColumns = 1000;
@@ -87,8 +124,8 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   BOOL _fixedGrid;
   NSUInteger _columns;
   NSUInteger _rows;
-  NSFileHandle *_readHandle;
-  BOOL _exitDelivered;
+  std::shared_ptr<COTLifecycleNative> *_native;
+  std::uint64_t _lifeGeneration;
   NSString *_lastClipboardWrite;
   NSUInteger _clipboardWriteCount;
   dispatch_queue_t _terminalQueue;
@@ -241,6 +278,8 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     dispatch_queue_set_specific(_terminalQueue, &COTTerminalOwnerKey, self, NULL);
     _writerTarget = [[COTWriterTarget alloc] init];
     _writerTarget.session = self;
+    _native = new std::shared_ptr<COTLifecycleNative>(std::make_shared<COTLifecycleNative>(_terminalQueue, _writerTarget));
+    (*_native)->life.reset(new cot::SessionLifecycle([self lifecycleAdapter:_native->get()]));
     COTTerminalSession *writerSelf = self;
     _writer = new cot::TransportWriter({
       [](int fd, const char *bytes, std::size_t length) -> cot::WriteResult {
@@ -323,19 +362,187 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   if (enabled) dispatch_resume(_writeSource); else dispatch_suspend(_writeSource);
   _writeSourceResumed = enabled;
 }
+// The writer is done with the descriptor. Patch B: it no longer closes it; its
+// WRITE source's cancellation acknowledges to the lifecycle, which closes the fd
+// once, after the READ source has acknowledged too.
 - (void)retireWriterDescriptor:(int)fd {
-  _masterFd = -1; // Borrowed alias only. No other method closes the descriptor.
+  (void)fd;
+  std::shared_ptr<COTLifecycleNative> native = *_native;
+  const std::uint64_t generation = _lifeGeneration;
   if (_writeSource) {
     dispatch_source_t source = _writeSource;
     _writeSource = NULL;
-    dispatch_source_set_cancel_handler(source, ^{ close(fd); });
+    native->writeAckPending = true;
+    dispatch_source_set_cancel_handler(source, ^{
+      native->writeAckPending = false;
+      native->life->writeCancelled(generation);
+    });
     dispatch_source_cancel(source);
     if (!_writeSourceResumed) dispatch_resume(source);
     _writeSourceResumed = NO;
-#if !OS_OBJECT_USE_OBJC
     dispatch_release(source);
-#endif
-  } else close(fd);
+  } else native->life->writeCancelled(generation);
+}
+// cancelWrite from the lifecycle: close the writer, or acknowledge if it is
+// already closed and no WRITE-source cancellation is still on its way.
+- (void)lifecycleCancelWrite {
+  COTLifecycleNative *native = _native->get();
+  if (_writer && _writer->descriptor() >= 0) _writer->close();
+  else if (!native->writeAckPending) native->life->writeCancelled(_lifeGeneration);
+}
+- (void)lifecycleIngest:(const char *)bytes length:(std::size_t)length {
+  if (_grid == NULL) return;
+  [self recordPerfReadWithByteCount:(NSUInteger)length];
+  [self recordPerfIngest];
+  _grid->ingest(bytes, length);
+  [self publishSnapshotAndNotify:YES];
+}
+- (void)lifecycleExited:(int)status {
+  _running = NO;
+  COTTerminalSession *session = [self retain];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    id<COTTerminalDelegate> delegate = [session delegate];
+    if ([delegate respondsToSelector:@selector(terminalSession:didExitWithStatus:)])
+      [delegate terminalSession:session didExitWithStatus:status];
+    [session release];
+  });
+}
+- (void)lifecycleLostChild:(int)errorNumber {
+  _running = NO;
+  [self recordTransportError:[NSString stringWithFormat:@"Child exit status unavailable: %s", strerror(errorNumber)]];
+  COTTerminalSession *session = [self retain];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    id<COTTerminalDelegate> delegate = [session delegate];
+    if ([delegate respondsToSelector:@selector(terminalSession:didLoseChildWithError:)])
+      [delegate terminalSession:session didLoseChildWithError:errorNumber];
+    [session release];
+  });
+}
+- (cot::SessionLifecycle::Adapter)lifecycleAdapter:(COTLifecycleNative *)native {
+  // `native` owns the core that owns these closures, so a raw pointer is safe.
+  // Session work goes through the target, which dealloc clears on this owner.
+  cot::SessionLifecycle::Adapter a;
+  a.read = [](int fd, char *buffer, std::size_t length) -> cot::IOResult {
+    ssize_t count = read(fd, buffer, length);
+    return {count, count < 0 ? errno : 0};
+  };
+  a.ingest = [native](const char *bytes, std::size_t length) {
+    [native->target.session lifecycleIngest:bytes length:length];
+  };
+  a.waitNoHang = [](int pid) -> cot::WaitResult {
+    int status = 0;
+    pid_t result = waitpid(pid, &status, WNOHANG);
+    return {(int)result, status, result < 0 ? errno : 0};
+  };
+  a.signal = [](int pid, int signalNumber) -> int { return kill(pid, signalNumber) == 0 ? 0 : errno; };
+  a.cancelRead = [native]() {
+    COTTerminalSession *session = native->target.session;
+    if (session) session->_masterFd = -1;  // The borrowed alias dies first.
+    if (native->read) {
+      dispatch_source_t source = native->read;
+      native->read = NULL;
+      dispatch_source_cancel(source);  // Its cancel handler acknowledges.
+      dispatch_release(source);
+    } else native->life->readCancelled(native->life->generation());
+  };
+  a.cancelWrite = [native]() {
+    COTTerminalSession *session = native->target.session;
+    if (session) [session lifecycleCancelWrite];
+    else if (!native->writeAckPending) native->life->writeCancelled(native->life->generation());
+  };
+  a.close = [](int fd) { close(fd); };
+  a.stopReaper = [native]() {
+    if (!native->reaper) return;
+    dispatch_source_t source = native->reaper;
+    native->reaper = NULL;
+    dispatch_source_cancel(source);
+    dispatch_release(source);
+  };
+  a.exited = [native](int status) { [native->target.session lifecycleExited:status]; };
+  a.unknown = [native](int errorNumber) { [native->target.session lifecycleLostChild:errorNumber]; };
+  a.transportEnded = [native](int errorNumber) {
+    if (errorNumber != 0)
+      [native->target.session recordTransportError:[NSString stringWithFormat:@"Terminal read failed: %s", strerror(errorNumber)]];
+  };
+  a.cleanupComplete = [native]() { native->clean.store(true); };
+  return a;
+}
+// Begins a lifecycle generation for `master` and `pid` on the owner, adopts the
+// writer, then starts the ONE reader and the reaper. On failure everything the
+// generation took is retired and the child stays owned until reaped.
+- (BOOL)beginTransport:(int)master pid:(pid_t)pid error:(NSString **)problem {
+  __block BOOL ok = NO;
+  __block NSString *failure = nil;
+  std::shared_ptr<COTLifecycleNative> native = *_native;
+  [self withTransportOwner:^{
+    if (!native->life->begin(master, (int)pid)) { failure = @"Previous transport cleanup is required before restart."; return; }
+    native->clean.store(false);
+    _lifeGeneration = native->life->generation();
+    const std::uint64_t generation = _lifeGeneration;
+    if (pid > 0) {
+      dispatch_source_t reaper = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _terminalQueue);
+      if (reaper) {
+        dispatch_source_set_timer(reaper, dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC), 50 * NSEC_PER_MSEC, 10 * NSEC_PER_MSEC);
+        dispatch_source_set_event_handler(reaper, ^{ native->life->reap(generation); });
+        native->reaper = reaper;
+        dispatch_resume(reaper);
+      }
+    }
+    if (![self adoptTransportDescriptorOnOwner:master]) {
+      failure = @"Terminal writable-readiness setup failed.";
+      native->life->terminate();
+      return;
+    }
+    dispatch_source_t reader = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, master, 0, _terminalQueue);
+    if (!reader) {
+      failure = @"Terminal read-readiness setup failed.";
+      native->life->terminate();
+      return;
+    }
+    dispatch_source_set_event_handler(reader, ^{ native->life->readable(generation); });
+    dispatch_source_set_cancel_handler(reader, ^{ native->life->readCancelled(generation); });
+    native->read = reader;
+    dispatch_resume(reader);
+    ok = YES;
+  }];
+  if (ok) {
+    std::lock_guard<std::mutex> lock(COTLifecycleRegistryLock);
+    auto &registry = COTLifecycleRegistry();
+    registry.erase(std::remove_if(registry.begin(), registry.end(),
+                                  [](const std::weak_ptr<COTLifecycleNative> &e) { return e.expired(); }),
+                   registry.end());
+    bool present = false;
+    for (auto &entry : registry) if (entry.lock() == native) present = true;
+    if (!present) registry.push_back(native);
+  }
+  if (problem) *problem = failure;
+  return ok;
+}
+- (BOOL)isCleanupComplete {
+  return (*_native)->clean.load();
+}
++ (NSUInteger)shutdownAllSessionsWithTimeout:(NSTimeInterval)timeout {
+  std::vector<std::shared_ptr<COTLifecycleNative>> live;
+  {
+    std::lock_guard<std::mutex> lock(COTLifecycleRegistryLock);
+    for (auto &entry : COTLifecycleRegistry()) if (auto native = entry.lock()) live.push_back(native);
+  }
+  for (auto &native : live) {
+    std::shared_ptr<COTLifecycleNative> owned = native;
+    dispatch_async(native->queue, ^{
+      COTTerminalSession *session = owned->target.session;
+      if (session) session->_running = NO;
+      owned->life->terminate();
+    });
+  }
+  cot::WaitForQuiescence(
+    [&live]() { for (auto &native : live) if (!native->clean.load()) return false; return true; },
+    []() { return COTMonotonicSeconds(); },
+    [](double seconds) { usleep((useconds_t)(seconds * 1e6)); },
+    timeout);
+  NSUInteger incomplete = 0;
+  for (auto &native : live) if (!native->clean.load()) ++incomplete;
+  return incomplete;
 }
 - (void)recordTransportError:(NSString *)message {
   if ((_transportError == nil && message == nil) || [_transportError isEqual:message]) return;
@@ -351,9 +558,23 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     [owned release]; [session release];
   });
 }
+// Test/output-only seam: an fd-only lifecycle generation (no child, no reader)
+// so the lifecycle remains the descriptor's single closer.
 - (BOOL)adoptTransportDescriptor:(int)descriptor {
   __block BOOL adopted = NO;
+  std::shared_ptr<COTLifecycleNative> native = *_native;
   [self withTransportOwner:^{
+    if (!native->life->begin(descriptor, -1)) return;
+    native->clean.store(false);
+    _lifeGeneration = native->life->generation();
+    adopted = [self adoptTransportDescriptorOnOwner:descriptor];
+    if (!adopted) native->life->terminate();
+  }];
+  return adopted;
+}
+- (BOOL)adoptTransportDescriptorOnOwner:(int)descriptor {
+  __block BOOL adopted = NO;
+  ^{
     if (!_writer->open(descriptor, _allowsInput)) return;
     _masterFd = descriptor;
     int flags = fcntl(descriptor, F_GETFL, 0);
@@ -374,7 +595,7 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     dispatch_source_set_event_handler(_writeSource, ^{ [target.session writerWritable:generation]; });
     [self recordTransportError:nil];
     adopted = YES;
-  }];
+  }();
   return adopted;
 }
 - (void)scheduleWriterContinuation:(std::uint64_t)generation ticket:(std::uint64_t)ticket {
@@ -497,6 +718,7 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 
 - (void)dealloc {
   _handle->session = nil;  // first: anything queued for the main thread now finds nothing
+  // HUP once and retire; the shared lifecycle keeps reaping after we are gone.
   [self terminate];
   if (_terminalQueue != NULL) [self withTransportOwner:^{
     _writerTarget.session = nil;
@@ -504,6 +726,7 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     delete _grid;
     _grid = NULL;
   }];
+  delete _native; _native = NULL;
   [_writerTarget release];
   [_transportError release];
   [_configuration release];
@@ -527,7 +750,9 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   }
   return NO;
 #else
-  if (_masterFd >= 0) {
+  __block BOOL clean = NO;
+  [self withTransportOwner:^{ clean = (*_native)->life->canBegin(); }];
+  if (!clean) {
     if (error) *error = [NSError errorWithDomain:COTTerminalErrorDomain code:3
       userInfo:@{NSLocalizedDescriptionKey:@"Previous transport cleanup is required before restart."}];
     return NO;
@@ -580,122 +805,36 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     _exit(127);
   }
 
-  _childPid = pid;
-  if (![self adoptTransportDescriptor:master]) {
-    [self terminate];
+  _childPid = pid;  // Informational; the lifecycle owns the PID until reaped.
+  NSString *problem = nil;
+  if (![self beginTransport:master pid:pid error:&problem]) {
     if (error) *error = [NSError errorWithDomain:COTTerminalErrorDomain code:4
-      userInfo:@{NSLocalizedDescriptionKey:@"Terminal writable-readiness setup failed."}];
+      userInfo:@{NSLocalizedDescriptionKey:problem ?: @"Terminal transport setup failed."}];
     return NO;
   }
   _running = YES;
-  _exitDelivered = NO;
-  _readHandle = [[NSFileHandle alloc] initWithFileDescriptor:_masterFd closeOnDealloc:NO];
-  [[NSNotificationCenter defaultCenter] addObserver:self
-                                           selector:@selector(handleReadCompletion:)
-                                               name:NSFileHandleReadCompletionNotification
-                                             object:_readHandle];
-  [_readHandle readInBackgroundAndNotify];
   return YES;
 #endif
 }
 
-- (void)handleReadCompletion:(NSNotification *)notification {
-  if ([notification object] != _readHandle) return; // Ignore a retired reader.
-  NSData *data = [[notification userInfo] objectForKey:NSFileHandleNotificationDataItem];
-  if (data == nil || [data length] == 0) {
-    [self deliverChildExit];
-    return;
-  }
-  [self recordPerfReadWithByteCount:[data length]];
-  NSData *ownedData = [data copy];
-  [self performGridMutation:^{
-    [self recordPerfIngest];
-    _grid->ingest((const char *)[ownedData bytes], (std::size_t)[ownedData length]);
-    [ownedData release];
-  } notify:YES];
-  if (_readHandle != nil) {
-    [_readHandle readInBackgroundAndNotify];
-  }
-}
-
-- (void)deliverChildExit {
-  if (_exitDelivered) {
-    return;
-  }
-  _exitDelivered = YES;
-  if (_readHandle != nil) {
-    [[NSNotificationCenter defaultCenter] removeObserver:self
-                                                    name:NSFileHandleReadCompletionNotification
-                                                  object:_readHandle];
-  }
-  int status = 0;
-  if (_childPid > 0) {
-    waitpid(_childPid, &status, 0);
-    _childPid = -1;
-  }
-  _running = NO;
-  if ([_delegate respondsToSelector:@selector(terminalSession:didExitWithStatus:)]) {
-    [_delegate terminalSession:self didExitWithStatus:status];
-  }
-}
-
+// One reader (patch B): the lifecycle's READ source is the only path that reads
+// the master. EOF is a transport event; the reaper alone decides child exit.
 - (void)terminate {
-  if (_readHandle != nil) {
-    [[NSNotificationCenter defaultCenter] removeObserver:self
-                                                    name:NSFileHandleReadCompletionNotification
-                                                  object:_readHandle];
-    [_readHandle release];
-    _readHandle = nil;
-  }
-  if (_childPid > 0) {
-    kill(_childPid, SIGHUP);
-    int status = 0;
-    waitpid(_childPid, &status, WNOHANG);
-    _childPid = -1;
-  }
-  if (_terminalQueue != NULL) [self withTransportOwner:^{
-    if (_writer) _writer->close();
-  }];
+  if (_terminalQueue == NULL || _native == NULL) return;
+  [self withTransportOwner:^{ (*_native)->life->terminate(); }];
   _running = NO;
 }
 
+// Compatibility: asks the owner to make progress now (read what is ready, reap
+// once). It is not a second reader; it runs the same generation-checked path.
 - (void)poll {
 #if !defined(_WIN32)
-  if (_masterFd < 0) {
-    return;
-  }
-  char buffer[8192];
-  bool changed = false;
-  for (;;) {
-    ssize_t count = read(_masterFd, buffer, sizeof(buffer));
-    if (count > 0) {
-      [self recordPerfReadWithByteCount:(NSUInteger)count];
-      NSData *ownedData = [[NSData alloc] initWithBytes:buffer length:(NSUInteger)count];
-      [self performGridMutation:^{
-        [self recordPerfIngest];
-        _grid->ingest((const char *)[ownedData bytes], (std::size_t)[ownedData length]);
-        [ownedData release];
-      } notify:YES];
-      changed = true;
-      continue;
-    }
-    if (count == 0) {
-      [self deliverChildExit];
-      break;
-    }
-    if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-      [self deliverChildExit];
-    }
-    break;
-  }
-  (void)changed;
-  if (_childPid > 0) {
-    int status = 0;
-    pid_t result = waitpid(_childPid, &status, WNOHANG);
-    if (result == _childPid) {
-      [self deliverChildExit];
-    }
-  }
+  if (_terminalQueue == NULL || _native == NULL) return;
+  [self withTransportOwner:^{
+    cot::SessionLifecycle *life = (*_native)->life.get();
+    life->readable(life->generation());
+    life->reap(life->generation());
+  }];
 #endif
 }
 

@@ -31,6 +31,7 @@ add_library(CocoaTerminal
   src/COTTerminalConfiguration.mm
   src/COTTerminalGrid.cpp
   src/COTTransportWriter.cpp
+  src/COTSessionLifecycle.cpp
   src/COTTerminalSession.mm
   src/COTTerminalTheme.mm
   src/COTTerminalView.mm
@@ -140,6 +141,13 @@ if(COCOATERMINAL_BUILD_TESTS)
   add_executable(CocoaTerminalWriterTests tests/COTTransportWriterTests.cpp src/COTTransportWriter.cpp)
   target_include_directories(CocoaTerminalWriterTests PRIVATE src)
   add_test(NAME CocoaTerminalWriterTests COMMAND CocoaTerminalWriterTests)
+endif()
+
+if(COCOATERMINAL_BUILD_TESTS)
+  add_executable(CocoaTerminalLifecycleTests tests/COTSessionLifecycleTests.cpp src/COTSessionLifecycle.cpp)
+  target_include_directories(CocoaTerminalLifecycleTests PRIVATE src)
+  target_compile_features(CocoaTerminalLifecycleTests PRIVATE cxx_std_17)
+  add_test(NAME CocoaTerminalLifecycleTests COMMAND CocoaTerminalLifecycleTests)
 endif()
 
 if(COCOATERMINAL_BUILD_TESTS)

@@ -129,6 +129,8 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
   pid_t _childPid;
 #endif
   BOOL _running;
+  BOOL _allowsInput;
+  BOOL _fixedGrid;
   NSUInteger _columns;
   NSUInteger _rows;
   NSFileHandle *_readHandle;
@@ -246,9 +248,25 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
 #if defined(_WIN32) && defined(GNUSTEP)
     [COTMainQueueWatcher install];
 #endif
+#if !defined(_WIN32)
+    _masterFd = -1;  // before any early return: -dealloc closes it
+    _childPid = -1;
+#endif
     _configuration = [configuration copy];
-    _columns = 80;
-    _rows = 24;
+    if (_configuration == nil ||
+        (_configuration.inputPolicy != COTTerminalInputPolicyInteractive &&
+         _configuration.inputPolicy != COTTerminalInputPolicyObserve) ||
+        (_configuration.sizingPolicy != COTTerminalSizingPolicyFollowView &&
+         _configuration.sizingPolicy != COTTerminalSizingPolicyFixedGrid) ||
+        _configuration.initialColumns < 1 || _configuration.initialColumns > COTTerminalMaximumColumns ||
+        _configuration.initialRows < 1 || _configuration.initialRows > COTTerminalMaximumRows) {
+      [self release];
+      return nil;
+    }
+    _allowsInput = _configuration.inputPolicy == COTTerminalInputPolicyInteractive;
+    _fixedGrid = _configuration.sizingPolicy == COTTerminalSizingPolicyFixedGrid;
+    _columns = _configuration.initialColumns;
+    _rows = _configuration.initialRows;
     _grid = new cot::TerminalGrid(_columns, _rows);
     _grid->setScrollbackLimit([_configuration scrollbackLineLimit]);
     COTTerminalSession *unsafeSelf = self;
@@ -335,6 +353,7 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
 }
 
 - (void)writeReplyBytes:(const char *)bytes length:(std::size_t)length {
+  if (!_allowsInput) return;
 #if defined(_WIN32)
   if (_conpty != NULL && length > 0) {
     _conpty->write(bytes, length);
@@ -386,6 +405,7 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
 }
 
 - (void)deliverClipboardWrite:(const std::string &)data {
+  if (!_allowsInput) return;
   NSString *text = [[[NSString alloc] initWithBytes:data.data()
                                               length:data.size()
                                             encoding:NSUTF8StringEncoding] autorelease];
@@ -421,6 +441,9 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
 // Win32 pasteboard blocked the terminal queue when read from it), then answer back on the terminal queue. The answer
 // follows whatever output arrived meanwhile, as any terminal's reply may.
 - (void)answerClipboardQueryWithMask:(int)mask {
+  if (!_allowsInput) {  // Observe: no pasteboard reads, and no reply
+    return;
+  }
   COTSessionHandle *handle = [_handle retain];
   dispatch_queue_t terminalQueue = _terminalQueue;
   dispatch_async(dispatch_get_main_queue(), ^{
@@ -447,6 +470,7 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
 }
 
 - (std::string)readClipboardForRemote {
+  if (!_allowsInput) return std::string();
   NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
   NSString *value = nil;
   @try {
@@ -470,9 +494,11 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
 }
 
 - (void)dealloc {
-  _handle->session = nil;  // first: anything queued for the main thread now finds nothing
+  if (_handle != nil) {  // nil after a refused configuration
+    _handle->session = nil;  // first: anything queued for the main thread now finds nothing
+  }
   [self terminate];
-  dispatch_sync(_terminalQueue, ^{
+  if (_terminalQueue != NULL) dispatch_sync(_terminalQueue, ^{
     delete _grid;
     _grid = NULL;
 #if defined(_WIN32)
@@ -794,6 +820,7 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
 }
 
 - (void)resizeToColumns:(NSUInteger)columns rows:(NSUInteger)rows {
+  if (_fixedGrid) return; // Policy refusal: neither parser nor PTY is resized.
   NSUInteger targetColumns = MIN(MAX(columns, 1), COTTerminalMaximumColumns);
   NSUInteger targetRows = MIN(MAX(rows, 1), COTTerminalMaximumRows);
   _columns = targetColumns;
@@ -864,6 +891,7 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
 }
 
 - (void)sendInput:(NSData *)data {
+  if (!_allowsInput) return;
 #if defined(_WIN32)
   BOOL wrote = _conpty != NULL && _running && [data length] > 0 &&
                _conpty->write((const char *)[data bytes], (std::size_t)[data length]);
@@ -878,6 +906,19 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
       _grid->scrollToBottom();
     } notify:YES];
   }
+}
+
+- (BOOL)allowsInput { return _allowsInput; }
+- (BOOL)allowsLocalCopy { return _allowsInput; }
+- (BOOL)fixedGrid { return _fixedGrid; }
+
+- (void)ingestOutputData:(NSData *)data {
+  if (_allowsInput || [data length] == 0) return;
+  NSData *owned = [data copy];
+  [self performGridMutation:^{
+    _grid->ingest((const char *)[owned bytes], [owned length]);
+    [owned release];
+  } notify:YES];
 }
 
 - (NSArray<NSString *> *)visibleLines {

@@ -38,6 +38,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSArray<NSString *> *)visibleLines;
 - (NSArray<NSArray<NSDictionary *> *> *)styledVisibleRows;
 - (NSUInteger)scrollbackLineCount;
+/// Changes how many lines of scrollback are kept, while running. Lowering it drops the oldest lines at once (and
+/// pulls a scrolled-back viewport in to what's left). Also updates the configuration's scrollbackLineLimit.
+- (void)setScrollbackLineLimit:(NSUInteger)limit;
 - (BOOL)isBracketedPasteEnabled;
 - (BOOL)isFocusReportingEnabled;
 - (NSString *)title;

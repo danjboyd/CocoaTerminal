@@ -660,6 +660,20 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   return [self currentSnapshot]->scrollbackLineCount;
 }
 
+- (void)setScrollbackLineLimit:(NSUInteger)limit {
+  [_configuration setScrollbackLineLimit:limit];
+  if (_grid == NULL) {
+    return;
+  }
+  // The grid is only touched on the terminal queue. That queue never waits on the main thread, so waiting here is safe.
+  dispatch_sync(_terminalQueue, ^{
+    if (_grid != NULL) {
+      _grid->setScrollbackLimit(limit);
+      [self publishSnapshotAndNotify:YES];
+    }
+  });
+}
+
 - (NSUInteger)viewportOffset {
   return [self currentSnapshot]->viewportOffset;
 }

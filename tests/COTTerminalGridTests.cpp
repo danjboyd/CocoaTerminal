@@ -150,5 +150,20 @@ int main() {
   expectLine(lineDrawingGrid, 0, "┌─┐         ");
   expectLine(lineDrawingGrid, 1, "│ │         ");
 
+  // Lowering the scrollback limit while lines are held drops the oldest at once, and pulls a scrolled-back
+  // viewport in to what's left.
+  cot::TerminalGrid trimGrid(8, 2);
+  trimGrid.setScrollbackLimit(100);
+  const char *many = "1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n";
+  trimGrid.ingest(many, std::char_traits<char>::length(many));
+  expect(trimGrid.scrollbackLineCount() == 8, "expected eight lines of scrollback before trimming");
+  trimGrid.setViewportOffset(6);
+  expect(trimGrid.viewportOffset() == 6, "expected the viewport scrolled back six lines");
+  trimGrid.setScrollbackLimit(3);
+  expect(trimGrid.scrollbackLineCount() == 3, "expected the scrollback trimmed to the new limit");
+  expect(trimGrid.viewportOffset() == 3, "expected the viewport pulled in to the trimmed scrollback");
+  trimGrid.setScrollbackLimit(50);
+  expect(trimGrid.scrollbackLineCount() == 3, "raising the limit keeps what's there");
+
   return 0;
 }

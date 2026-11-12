@@ -60,6 +60,27 @@ static NSFont *COTFontWithFamily(NSString *family, CGFloat size) {
   return [self alacrittyInspiredDarkTheme];
 }
 
++ (NSColor *)xtermColorAtIndex:(NSUInteger)index {
+  if (index < 16 || index > 255) {
+    return nil;
+  }
+  CGFloat red, green, blue;
+  if (index < 232) {
+    // 16-231: a 6x6x6 cube; each step is 0, 95, 135, 175, 215 or 255.
+    NSUInteger cube = index - 16;
+    NSUInteger steps[3] = {cube / 36, (cube / 6) % 6, cube % 6};
+    CGFloat values[3];
+    for (int i = 0; i < 3; i++) {
+      values[i] = steps[i] == 0 ? 0.0 : (55.0 + 40.0 * (CGFloat)steps[i]);
+    }
+    red = values[0]; green = values[1]; blue = values[2];
+  } else {
+    // 232-255: greys from 8 to 238, in steps of 10.
+    red = green = blue = 8.0 + 10.0 * (CGFloat)(index - 232);
+  }
+  return [NSColor colorWithCalibratedRed:red / 255.0 green:green / 255.0 blue:blue / 255.0 alpha:1.0];
+}
+
 + (instancetype)alacrittyInspiredDarkTheme {
   COTTerminalTheme *theme = [[[self alloc] init] autorelease];
   theme.name = @"Alacritty Inspired Dark";

@@ -107,6 +107,9 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   BOOL _screenUpdateScheduled;
   BOOL _pendingFullRedraw;
   NSMutableIndexSet *_pendingDirtyRows;
+  // The row the cursor was last painted on (NSNotFound: none). A cursor that leaves a row whose text didn't change
+  // must still repaint that row, or its old block stays on screen.
+  NSUInteger _paintedCursorRow;
   BOOL _perfLoggingEnabled;
   NSTimeInterval _perfLastLogTime;
   NSUInteger _perfScreenUpdates;
@@ -212,6 +215,7 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
     _baseFontSize = [[configuration theme] fontSize];
     _activeMouseButton = -1;
     _pendingDirtyRows = [[NSMutableIndexSet alloc] init];
+    _paintedCursorRow = NSNotFound;
     _perfLoggingEnabled = getenv("COCOATERMINAL_PERF_LOG") != NULL;
     _perfLastLogTime = [NSDate timeIntervalSinceReferenceDate];
     [self rebuildTextAttributes];
@@ -233,6 +237,7 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
     _baseFontSize = [[[_session configuration] theme] fontSize];
     _activeMouseButton = -1;
     _pendingDirtyRows = [[NSMutableIndexSet alloc] init];
+    _paintedCursorRow = NSNotFound;
     _perfLoggingEnabled = getenv("COCOATERMINAL_PERF_LOG") != NULL;
     _perfLastLogTime = [NSDate timeIntervalSinceReferenceDate];
     [self rebuildTextAttributes];
@@ -1350,6 +1355,13 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
     return;
   }
 
+  // The cursor's old row and its new one join the rows whose text changed.
+  NSUInteger cursorRow = snapshot->viewportOffset == 0 && snapshot->cursorRow < snapshot->rows ? snapshot->cursorRow : NSNotFound;
+  if (_paintedCursorRow != cursorRow) {
+    if (_paintedCursorRow != NSNotFound && _paintedCursorRow < snapshot->rows) [_pendingDirtyRows addIndex:_paintedCursorRow];
+    if (cursorRow != NSNotFound) [_pendingDirtyRows addIndex:cursorRow];
+  }
+  _paintedCursorRow = cursorRow;
   NSUInteger dirtyCount = [_pendingDirtyRows count];
   BOOL fullRedraw = _pendingFullRedraw || dirtyCount == 0 || dirtyCount > MAX((NSUInteger)1, snapshot->rows / 2);
   [self recordPerfUpdateWithDirtyRowCount:(fullRedraw ? snapshot->rows : dirtyCount)];

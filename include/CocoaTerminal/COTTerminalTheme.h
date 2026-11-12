@@ -29,6 +29,9 @@ typedef NS_ENUM(NSInteger, COTTerminalCursorStyle) {
 
 + (instancetype)defaultTheme;
 + (instancetype)alacrittyInspiredDarkTheme;
+/// xterm's standard colour for palette indices 16-255 (the 6x6x6 cube, then 24 greys); nil outside that range.
+/// Drawing uses it for any index the theme's ansiColors doesn't cover, so a 16-colour palette keeps the 256-colour range.
++ (nullable NSColor *)xtermColorAtIndex:(NSUInteger)index;
 
 @end
 

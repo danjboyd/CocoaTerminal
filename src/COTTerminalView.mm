@@ -66,6 +66,11 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
     if (color.index >= 0 && color.index < (int)[colors count]) {
       return [colors objectAtIndex:(NSUInteger)color.index];
     }
+    // A 16-colour palette still gives programs the standard 256-colour range.
+    NSColor *standard = color.index >= 16 ? [COTTerminalTheme xtermColorAtIndex:(NSUInteger)color.index] : nil;
+    if (standard != nil) {
+      return standard;
+    }
     break;
   }
   case cot::TerminalColor::Kind::RGB:
@@ -1083,6 +1088,22 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
 
 - (void)resetZoom {
   [self setZoomFontSize:_baseFontSize];
+}
+
+- (void)applyTheme:(COTTerminalTheme *)theme {
+  if (theme == nil || _session == nil) {
+    return;
+  }
+  COTTerminalTheme *copy = [theme copy];
+  [[_session configuration] setTheme:copy];
+  _baseFontSize = [copy fontSize];
+  [copy release];
+  [self rebuildTextAttributes];
+  // Now, not after the usual settle delay: the caller sees the new size as soon as this returns.
+  [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performPendingTerminalSizeUpdate) object:nil];
+  _terminalSizeUpdateScheduled = NO;
+  [self updateTerminalSizeFromBounds];
+  [self setNeedsDisplay:YES];
 }
 
 - (NSRect)rectForTerminalRow:(NSUInteger)row snapshot:(COTTerminalSnapshot *)snapshot {

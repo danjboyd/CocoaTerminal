@@ -24,6 +24,10 @@ extern NSString *const COTTerminalExitStatusUserInfoKey;
 - (void)zoomIn;
 - (void)zoomOut;
 - (void)resetZoom;
+/// Applies a theme to a view that may already be running: a copy of it becomes the session's theme and the new base
+/// size for zoom (any zoom is reset). The cells are measured again, a running session is resized to fit (the program
+/// gets SIGWINCH), and the view redraws. Colours, palette and cursor style apply on the next draw.
+- (void)applyTheme:(COTTerminalTheme *)theme;
 - (NSString *)selectedText;
 - (void)copySelection;
 - (void)pasteFromClipboard;

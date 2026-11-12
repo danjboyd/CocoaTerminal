@@ -19,6 +19,15 @@ typedef NS_ENUM(NSInteger, COTTerminalExitBehavior) {
   COTTerminalExitBehaviorTerminateApplication = 2,
 };
 
+typedef NS_ENUM(NSInteger, COTTerminalInputPolicy) {
+  COTTerminalInputPolicyInteractive = 0,
+  COTTerminalInputPolicyObserve = 1,
+};
+typedef NS_ENUM(NSInteger, COTTerminalSizingPolicy) {
+  COTTerminalSizingPolicyFollowView = 0,
+  COTTerminalSizingPolicyFixedGrid = 1,
+};
+
 @interface COTTerminalConfiguration : NSObject <NSCopying>
 
 @property (nonatomic, copy) NSArray<NSString *> *shellCommand;
@@ -32,6 +41,13 @@ typedef NS_ENUM(NSInteger, COTTerminalExitBehavior) {
 @property (nonatomic) NSUInteger scrollbackLineLimit;
 @property (nonatomic) COTKeyboardCapturePolicy keyboardCapturePolicy;
 @property (nonatomic) COTTerminalExitBehavior exitBehavior;
+
+// Session construction freezes these policies and dimensions. Invalid values
+// reject construction; changing a configuration cannot promote an observer.
+@property (nonatomic) COTTerminalInputPolicy inputPolicy;
+@property (nonatomic) COTTerminalSizingPolicy sizingPolicy;
+@property (nonatomic) NSUInteger initialColumns;
+@property (nonatomic) NSUInteger initialRows;
 
 + (instancetype)defaultConfiguration;
 

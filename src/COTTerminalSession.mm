@@ -58,6 +58,8 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   int _masterFd;
   pid_t _childPid;
   BOOL _running;
+  BOOL _allowsInput;
+  BOOL _fixedGrid;
   NSUInteger _columns;
   NSUInteger _rows;
   NSFileHandle *_readHandle;
@@ -160,9 +162,23 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 - (instancetype)initWithConfiguration:(COTTerminalConfiguration *)configuration {
   self = [super init];
   if (self) {
+    _masterFd = -1;
+    _childPid = -1;
     _configuration = [configuration copy];
-    _columns = 80;
-    _rows = 24;
+    if (_configuration == nil ||
+        (_configuration.inputPolicy != COTTerminalInputPolicyInteractive &&
+         _configuration.inputPolicy != COTTerminalInputPolicyObserve) ||
+        (_configuration.sizingPolicy != COTTerminalSizingPolicyFollowView &&
+         _configuration.sizingPolicy != COTTerminalSizingPolicyFixedGrid) ||
+        _configuration.initialColumns < 1 || _configuration.initialColumns > COTTerminalMaximumColumns ||
+        _configuration.initialRows < 1 || _configuration.initialRows > COTTerminalMaximumRows) {
+      [self release];
+      return nil;
+    }
+    _allowsInput = _configuration.inputPolicy == COTTerminalInputPolicyInteractive;
+    _fixedGrid = _configuration.sizingPolicy == COTTerminalSizingPolicyFixedGrid;
+    _columns = _configuration.initialColumns;
+    _rows = _configuration.initialRows;
     _grid = new cot::TerminalGrid(_columns, _rows);
     _grid->setScrollbackLimit([_configuration scrollbackLineLimit]);
     COTTerminalSession *unsafeSelf = self;
@@ -242,6 +258,7 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 }
 
 - (void)writeReplyBytes:(const char *)bytes length:(std::size_t)length {
+  if (!_allowsInput) return;
 #if !defined(_WIN32)
   if (_masterFd >= 0 && length > 0) {
     ssize_t total = 0;
@@ -293,6 +310,7 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 }
 
 - (void)deliverClipboardWrite:(const std::string &)data {
+  if (!_allowsInput) return;
   NSString *text = [[[NSString alloc] initWithBytes:data.data()
                                               length:data.size()
                                             encoding:NSUTF8StringEncoding] autorelease];
@@ -317,6 +335,7 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 }
 
 - (std::string)readClipboardForRemote {
+  if (!_allowsInput) return std::string();
   NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
   NSString *value = nil;
   @try {
@@ -341,7 +360,7 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 
 - (void)dealloc {
   [self terminate];
-  dispatch_sync(_terminalQueue, ^{
+  if (_terminalQueue != NULL) dispatch_sync(_terminalQueue, ^{
     delete _grid;
     _grid = NULL;
   });
@@ -529,6 +548,7 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 }
 
 - (void)resizeToColumns:(NSUInteger)columns rows:(NSUInteger)rows {
+  if (_fixedGrid) return; // Policy refusal: neither parser nor PTY is resized.
   NSUInteger targetColumns = MIN(MAX(columns, 1), COTTerminalMaximumColumns);
   NSUInteger targetRows = MIN(MAX(rows, 1), COTTerminalMaximumRows);
   _columns = targetColumns;
@@ -595,6 +615,7 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 }
 
 - (void)sendInput:(NSData *)data {
+  if (!_allowsInput) return;
 #if !defined(_WIN32)
   if (_masterFd >= 0 && [data length] > 0) {
     (void)write(_masterFd, [data bytes], [data length]);
@@ -607,6 +628,19 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 #else
   (void)data;
 #endif
+}
+
+- (BOOL)allowsInput { return _allowsInput; }
+- (BOOL)allowsLocalCopy { return _allowsInput; }
+- (BOOL)fixedGrid { return _fixedGrid; }
+
+- (void)ingestOutputData:(NSData *)data {
+  if (_allowsInput || [data length] == 0) return;
+  NSData *owned = [data copy];
+  [self performGridMutation:^{
+    _grid->ingest((const char *)[owned bytes], [owned length]);
+    [owned release];
+  } notify:YES];
 }
 
 - (NSArray<NSString *> *)visibleLines {

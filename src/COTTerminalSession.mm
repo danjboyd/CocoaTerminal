@@ -345,6 +345,9 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     delete _grid;
     _grid = NULL;
   });
+  // The queue was created in -initWithConfiguration: and is owned by the session: without this, every session leaks it.
+  dispatch_release(_terminalQueue);
+  _terminalQueue = NULL;
   [_configuration release];
   [_snapshotLock release];
   [_snapshot release];

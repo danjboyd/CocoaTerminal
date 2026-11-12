@@ -12,6 +12,7 @@
 
 static NSString *const COTTerminalViewErrorDomain = @"COTTerminalViewErrorDomain";
 NSString *const COTTerminalViewDidExitNotification = @"COTTerminalViewDidExitNotification";
+NSString *const COTTerminalViewDidUpdateScreenNotification = @"COTTerminalViewDidUpdateScreenNotification";
 NSString *const COTTerminalExitStatusUserInfoKey = @"status";
 static NSUInteger const COTTerminalMaximumColumns = 1000;
 static NSUInteger const COTTerminalMaximumRows = 1000;
@@ -1349,6 +1350,7 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
     _pendingFullRedraw = NO;
     return;
   }
+  [[NSNotificationCenter defaultCenter] postNotificationName:COTTerminalViewDidUpdateScreenNotification object:self];
   if ([self isHiddenOrHasHiddenAncestor] || [self window] == nil) {
     [_pendingDirtyRows removeAllIndexes];
     _pendingFullRedraw = YES;

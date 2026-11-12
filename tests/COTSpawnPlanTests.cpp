@@ -34,7 +34,10 @@ struct Run { int status; SpawnRead read; SpawnFailure failure; };
 static Run Spawn(const SpawnPlan &plan) {
   int pipeFds[2];
   Run run{-1, SpawnRead::Malformed, {0, 0}};
-  if (pipe2(pipeFds, O_CLOEXEC) != 0) return run;
+  // pipe + FD_CLOEXEC rather than pipe2, which macOS lacks (as the library does).
+  if (pipe(pipeFds) != 0) return run;
+  fcntl(pipeFds[0], F_SETFD, FD_CLOEXEC);
+  fcntl(pipeFds[1], F_SETFD, FD_CLOEXEC);
   pid_t pid = fork();
   if (pid == 0) { close(pipeFds[0]); plan.execInChild(pipeFds[1]); }
   close(pipeFds[1]);

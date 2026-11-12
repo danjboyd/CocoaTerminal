@@ -8,7 +8,13 @@
 #include <string>
 #include <fcntl.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <util.h>
+#elif defined(__FreeBSD__)
+#include <libutil.h>
+#else
 #include <pty.h>
+#endif
 #include <sys/ioctl.h>
 
 @interface COTTerminalSession (ObserverTests)
@@ -117,15 +123,15 @@ int main(int argc, char **argv) {
     putFD(view.session, viewMaster);
     [view.session ingestOutputData:[queries dataUsingEncoding:NSUTF8StringEncoding]];
     drainParser(view.session);
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,800,200) styleMask:NSTitledWindowMask backing:NSBackingStoreBuffered defer:YES];
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,800,200) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:YES];
     [[window contentView] addSubview:view];
     [view updateTerminalSizeFromBounds];
     [view selectAll]; [view copySelection]; [view pasteFromClipboard];
     [view performSelector:@selector(copy:) withObject:nil]; [view performSelector:@selector(paste:) withObject:nil];
     [view becomeFirstResponder]; [view resignFirstResponder];
-    NSEvent *key = [NSEvent keyEventWithType:NSKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil characters:@"x" charactersIgnoringModifiers:@"x" isARepeat:NO keyCode:0];
+    NSEvent *key = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil characters:@"x" charactersIgnoringModifiers:@"x" isARepeat:NO keyCode:0];
     [view keyDown:key]; [view performKeyEquivalent:key];
-    NSEvent *paste = [NSEvent keyEventWithType:NSKeyDown location:NSZeroPoint modifierFlags:NSCommandKeyMask|NSShiftKeyMask timestamp:0 windowNumber:0 context:nil characters:@"v" charactersIgnoringModifiers:@"v" isARepeat:NO keyCode:0];
+    NSEvent *paste = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagCommand|NSEventModifierFlagShift timestamp:0 windowNumber:0 context:nil characters:@"v" charactersIgnoringModifiers:@"v" isARepeat:NO keyCode:0];
     [view keyDown:paste]; [view performKeyEquivalent:paste];
     [view sendMouseReportForEvent:key button:0 pressed:YES];
     [view setFrameSize:NSMakeSize(107,901)]; [view updateTerminalSizeFromBounds];

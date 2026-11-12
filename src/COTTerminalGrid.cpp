@@ -165,6 +165,9 @@ void TerminalGrid::setScrollbackLimit(std::size_t limit) {
   while (scrollback_.size() > scrollbackLimit_) {
     scrollback_.pop_front();
   }
+  if (viewportOffset_ > scrollback_.size()) {
+    viewportOffset_ = scrollback_.size();
+  }
 }
 
 void TerminalGrid::setOutputCallback(OutputCallback callback) {

@@ -5,6 +5,7 @@
 #import <CocoaTerminal/COTTerminalTheme.h>
 #import <CocoaTerminal/COTTerminalView.h>
 
+#import "COTAppKitCompat.h"
 #import "COTTerminalSessionInternal.h"
 
 #include <math.h>
@@ -200,7 +201,7 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   // Cmd+Shift so we never collide with terminal-control Ctrl+letter byte
   // translation in keyDown:.
   NSUInteger flags = [event modifierFlags];
-  if ((flags & NSCommandKeyMask) && (flags & NSShiftKeyMask)) {
+  if ((flags & NSEventModifierFlagCommand) && (flags & NSEventModifierFlagShift)) {
     NSString *base = [[event charactersIgnoringModifiers] lowercaseString];
     if ([base isEqualToString:@"c"]) {
       [self copySelection];
@@ -560,17 +561,17 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   }
 
   // Treat Cmd as Ctrl-equivalent for terminal control bytes. On GNUstep on Linux,
-  // the physical Ctrl key is commonly mapped to NSCommandKeyMask; on macOS it maps
-  // to NSControlKeyMask. Either way, bare modifier+letter (no Shift) means a
+  // the physical Ctrl key is commonly mapped to NSEventModifierFlagCommand; on macOS it maps
+  // to NSEventModifierFlagControl. Either way, bare modifier+letter (no Shift) means a
   // terminal control byte. Shift-modified variants are reserved for app shortcuts.
   if ([self sendTerminalControlBytesForEvent:event debug:debugKeys]) {
     return;
   }
 
   NSUInteger flags = [event modifierFlags];
-  BOOL hasCtrl = (flags & NSControlKeyMask) != 0;
-  BOOL hasCmd = (flags & NSCommandKeyMask) != 0;
-  BOOL hasAlt = (flags & NSAlternateKeyMask) != 0;
+  BOOL hasCtrl = (flags & NSEventModifierFlagControl) != 0;
+  BOOL hasCmd = (flags & NSEventModifierFlagCommand) != 0;
+  BOOL hasAlt = (flags & NSEventModifierFlagOption) != 0;
 
   if (hasAlt && !hasCmd && !hasCtrl && [characters length] > 0) {
     NSMutableData *data = [NSMutableData dataWithCapacity:1 + [characters length]];
@@ -591,7 +592,7 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
 
 - (void)mouseDown:(NSEvent *)event {
   [[self window] makeFirstResponder:self];
-  BOOL shift = ([event modifierFlags] & NSShiftKeyMask) != 0;
+  BOOL shift = ([event modifierFlags] & NSEventModifierFlagShift) != 0;
   BOOL hadSelection = _hasSelection;
   _hasSelection = NO;
   if ([_session isMouseReportingEnabled] && !shift) {
@@ -775,13 +776,13 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
     return;
   }
   NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
-  [pasteboard declareTypes:[NSArray arrayWithObject:NSStringPboardType] owner:nil];
-  [pasteboard setString:text forType:NSStringPboardType];
+  [pasteboard declareTypes:[NSArray arrayWithObject:COTPasteboardTypeString] owner:nil];
+  [pasteboard setString:text forType:COTPasteboardTypeString];
 }
 
 - (void)pasteFromClipboard {
   NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
-  NSString *text = [pasteboard stringForType:NSStringPboardType];
+  NSString *text = [pasteboard stringForType:COTPasteboardTypeString];
   if ([text length] == 0) {
     return;
   }
@@ -844,10 +845,10 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
 - (BOOL)sendTerminalControlBytesForEvent:(NSEvent *)event debug:(BOOL)debugKeys {
   NSString *characters = [event characters];
   NSUInteger flags = [event modifierFlags];
-  BOOL hasCtrl = (flags & NSControlKeyMask) != 0;
-  BOOL hasCmd = (flags & NSCommandKeyMask) != 0;
-  BOOL hasShift = (flags & NSShiftKeyMask) != 0;
-  BOOL hasAlt = (flags & NSAlternateKeyMask) != 0;
+  BOOL hasCtrl = (flags & NSEventModifierFlagControl) != 0;
+  BOOL hasCmd = (flags & NSEventModifierFlagCommand) != 0;
+  BOOL hasShift = (flags & NSEventModifierFlagShift) != 0;
+  BOOL hasAlt = (flags & NSEventModifierFlagOption) != 0;
 
   if (!(hasCtrl || hasCmd) || hasShift || [characters length] == 0) {
     return NO;
@@ -912,10 +913,10 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
 
 - (BOOL)handleClipboardShortcut:(NSEvent *)event {
   NSUInteger flags = [event modifierFlags];
-  BOOL hasCmd = (flags & NSCommandKeyMask) != 0;
-  BOOL hasShift = (flags & NSShiftKeyMask) != 0;
+  BOOL hasCmd = (flags & NSEventModifierFlagCommand) != 0;
+  BOOL hasShift = (flags & NSEventModifierFlagShift) != 0;
   // Require Cmd+Shift so we never collide with terminal-control Ctrl+letter
-  // (on GNUstep the physical Ctrl key often delivers NSCommandKeyMask, so bare
+  // (on GNUstep the physical Ctrl key often delivers NSEventModifierFlagCommand, so bare
   // Cmd+letter must remain available as a terminal control byte).
   if (!hasCmd || !hasShift) {
     return NO;
@@ -938,8 +939,8 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
 
 - (BOOL)handleScrollbackShortcut:(NSEvent *)event {
   NSUInteger flags = [event modifierFlags];
-  BOOL hasCmd = (flags & NSCommandKeyMask) != 0;
-  BOOL hasShift = (flags & NSShiftKeyMask) != 0;
+  BOOL hasCmd = (flags & NSEventModifierFlagCommand) != 0;
+  BOOL hasShift = (flags & NSEventModifierFlagShift) != 0;
   if (!hasCmd && !hasShift) {
     return NO;
   }
@@ -978,8 +979,8 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
 
 - (BOOL)handleZoomShortcut:(NSEvent *)event {
   NSUInteger flags = [event modifierFlags];
-  BOOL ctrl = (flags & NSControlKeyMask) != 0;
-  BOOL cmd = (flags & NSCommandKeyMask) != 0;
+  BOOL ctrl = (flags & NSEventModifierFlagControl) != 0;
+  BOOL cmd = (flags & NSEventModifierFlagCommand) != 0;
   if (!ctrl && !cmd) {
     return NO;
   }

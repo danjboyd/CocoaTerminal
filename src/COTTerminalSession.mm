@@ -4,6 +4,7 @@
 #import <CocoaTerminal/COTTerminalConfiguration.h>
 #import <CocoaTerminal/COTTerminalSession.h>
 
+#import "COTAppKitCompat.h"
 #import "COTTerminalSessionInternal.h"
 
 #include "COTTerminalGrid.h"
@@ -17,7 +18,12 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#if defined(__APPLE__) || defined(__linux__) || defined(__FreeBSD__)
+// forkpty: <util.h> on macOS, <libutil.h> on FreeBSD, <pty.h> on Linux.
+#if defined(__APPLE__)
+#include <util.h>
+#elif defined(__FreeBSD__)
+#include <libutil.h>
+#elif defined(__linux__)
 #include <pty.h>
 #endif
 
@@ -303,8 +309,8 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   _clipboardWriteCount += 1;
   NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
   @try {
-    [pasteboard declareTypes:[NSArray arrayWithObject:NSStringPboardType] owner:nil];
-    [pasteboard setString:text forType:NSStringPboardType];
+    [pasteboard declareTypes:[NSArray arrayWithObject:COTPasteboardTypeString] owner:nil];
+    [pasteboard setString:text forType:COTPasteboardTypeString];
   } @catch (NSException *exception) {
     // Pasteboard server may be unavailable on headless GNUstep; the write
     // is still observable via lastClipboardWrite.
@@ -320,7 +326,7 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
   NSString *value = nil;
   @try {
-    value = [pasteboard stringForType:NSStringPboardType];
+    value = [pasteboard stringForType:COTPasteboardTypeString];
   } @catch (NSException *exception) {
     (void)exception;
     value = nil;

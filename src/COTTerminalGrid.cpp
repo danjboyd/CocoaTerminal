@@ -45,7 +45,7 @@ bool TerminalAttributes::operator==(const TerminalAttributes& other) const {
   return colorEquals(foreground, other.foreground) && colorEquals(background, other.background) &&
          bold == other.bold && dim == other.dim && italic == other.italic &&
          underline == other.underline && inverse == other.inverse && strike == other.strike &&
-         blink == other.blink;
+         blink == other.blink && hidden == other.hidden;
 }
 
 struct GridTrampolines {
@@ -204,6 +204,83 @@ void TerminalGrid::resize(std::size_t columns, std::size_t rows) {
   rebuildVisibleCells();
 }
 
+std::string FaintRewriter::rewriteParameters(const std::string& parameters) {
+  std::vector<std::string> tokens;
+  std::size_t start = 0;
+  for (;;) {
+    std::size_t semi = parameters.find(';', start);
+    tokens.push_back(parameters.substr(start, semi == std::string::npos ? std::string::npos : semi - start));
+    if (semi == std::string::npos) break;
+    start = semi + 1;
+  }
+  std::string out;
+  bool first = true;
+  auto emit = [&](const std::string& token) {
+    if (!first) out += ';';
+    out += token;
+    first = false;
+  };
+  for (std::size_t i = 0; i < tokens.size(); ++i) {
+    const std::string& t = tokens[i];
+    if (t == "38" || t == "48" || t == "58") {
+      emit(t);
+      if (i + 1 < tokens.size() && tokens[i + 1] == "5") {
+        for (std::size_t k = 1; k <= 2 && i + 1 < tokens.size(); ++k) emit(tokens[++i]);
+      } else if (i + 1 < tokens.size() && tokens[i + 1] == "2") {
+        for (std::size_t k = 1; k <= 4 && i + 1 < tokens.size(); ++k) emit(tokens[++i]);
+      }
+      continue;
+    }
+    if (t == "2") { emit("11"); continue; }
+    if (t == "22") { emit("22"); emit("10"); continue; }
+    emit(t);
+  }
+  return out;
+}
+
+std::string FaintRewriter::rewrite(const char* bytes, std::size_t length) {
+  std::string out;
+  out.reserve(length + 8);
+  for (std::size_t i = 0; i < length; ++i) {
+    unsigned char c = static_cast<unsigned char>(bytes[i]);
+    switch (state_) {
+    case State::Ground:
+      if (c == 0x1b) { state_ = State::Escape; } else { out += static_cast<char>(c); }
+      break;
+    case State::Escape:
+      if (c == '[') {
+        state_ = State::Csi;
+        pending_.clear();
+      } else if (c == 0x1b) {
+        out += '\x1b';  // the first ESC was on its own; this one may start a sequence
+      } else {
+        out += '\x1b';
+        out += static_cast<char>(c);
+        state_ = State::Ground;
+      }
+      break;
+    case State::Csi:
+      if (c >= 0x30 && c <= 0x3f) {
+        pending_ += static_cast<char>(c);
+        if (pending_.size() > 256) { out += "\x1b["; out += pending_; pending_.clear(); state_ = State::Ground; }
+      } else if (c == 'm' && (pending_.empty() || (pending_[0] >= '0' && pending_[0] <= ';'))) {
+        out += "\x1b[";
+        out += rewriteParameters(pending_);
+        out += 'm';
+        state_ = State::Ground;
+      } else {
+        // Any other CSI (or an intermediate, a control byte): as it came.
+        out += "\x1b[";
+        out += pending_;
+        out += static_cast<char>(c);
+        state_ = State::Ground;
+      }
+      break;
+    }
+  }
+  return out;
+}
+
 void TerminalGrid::ingest(const char* bytes, std::size_t length) {
   if (length == 0 || vt_ == nullptr) {
     return;
@@ -215,7 +292,8 @@ void TerminalGrid::ingest(const char* bytes, std::size_t length) {
     }
   }
   snoopPrivateModes(bytes, length);
-  vterm_input_write(static_cast<VTerm*>(vt_), bytes, length);
+  std::string rewritten = faint_.rewrite(bytes, length);
+  vterm_input_write(static_cast<VTerm*>(vt_), rewritten.data(), rewritten.size());
   vterm_screen_flush_damage(static_cast<VTermScreen*>(screenPtr_));
   rebuildDirtyVisibleCells();
 }
@@ -350,7 +428,8 @@ TerminalCell TerminalGrid::cellFromVTermOpaque(const void* srcPtr) const {
   cell.attributes.inverse = src.attrs.reverse != 0;
   cell.attributes.strike = src.attrs.strike != 0;
   cell.attributes.blink = src.attrs.blink != 0;
-  cell.attributes.dim = src.attrs.conceal != 0;
+  cell.attributes.dim = src.attrs.font == 1;  // SGR 2, carried as alternate font 1 (FaintRewriter)
+  cell.attributes.hidden = src.attrs.conceal != 0;
 
   auto convertColor = [](const VTermColor& src, bool foreground) {
     TerminalColor color;
@@ -719,6 +798,8 @@ int TerminalGrid::onScrollbackPop(int cols, void* cellsPtr) {
     cells[c].attrs.reverse = src.attributes.inverse ? 1 : 0;
     cells[c].attrs.strike = src.attributes.strike ? 1 : 0;
     cells[c].attrs.blink = src.attributes.blink ? 1 : 0;
+    cells[c].attrs.font = src.attributes.dim ? 1 : 0;
+    cells[c].attrs.conceal = src.attributes.hidden ? 1 : 0;
     if (!src.text.empty()) {
       const unsigned char* p = reinterpret_cast<const unsigned char*>(src.text.data());
       std::size_t remaining = src.text.size();

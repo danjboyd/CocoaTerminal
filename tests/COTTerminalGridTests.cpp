@@ -150,5 +150,30 @@ int main() {
   expectLine(lineDrawingGrid, 0, "┌─┐         ");
   expectLine(lineDrawingGrid, 1, "│ │         ");
 
+  // SGR 2 (faint) survives libvterm as alternate font 1; 22 ends it; 8 hides; colour sub-parameters pass untouched.
+  expect(cot::FaintRewriter::rewriteParameters("2") == "11", "2 -> 11");
+  expect(cot::FaintRewriter::rewriteParameters("1;2;31") == "1;11;31", "1;2;31 -> 1;11;31");
+  expect(cot::FaintRewriter::rewriteParameters("22") == "22;10", "22 -> 22;10");
+  expect(cot::FaintRewriter::rewriteParameters("38;2;2;2;2") == "38;2;2;2;2", "38;2;r;g;b untouched");
+  expect(cot::FaintRewriter::rewriteParameters("48;5;2;2") == "48;5;2;11", "48;5;n then a 2");
+  expect(cot::FaintRewriter::rewriteParameters("38:2::2:2:2") == "38:2::2:2:2", "colon colour untouched");
+  expect(cot::FaintRewriter::rewriteParameters("") == "", "an empty SGR stays empty (reset)");
+  cot::TerminalGrid dimGrid(16, 2);
+  const char *dim = "\033[2mA\033[22mB\033[1;2mC\033[0mD\033[8mE\033[0m\033[38;2;2;2;2mF";
+  dimGrid.ingest(dim, std::char_traits<char>::length(dim));
+  // A sequence split across writes is held until it's whole.
+  dimGrid.ingest("\033[", 2);
+  dimGrid.ingest("2mG", 3);
+  const auto &dimCells = dimGrid.visibleCells()[0];
+  expect(dimCells[0].text == "A" && dimCells[0].attributes.dim, "SGR 2: A is dim");
+  expect(dimCells[1].text == "B" && !dimCells[1].attributes.dim, "SGR 22 ends it: B isn't");
+  expect(dimCells[2].text == "C" && dimCells[2].attributes.dim && dimCells[2].attributes.bold, "1;2: C is bold and dim");
+  expect(dimCells[3].text == "D" && !dimCells[3].attributes.dim && !dimCells[3].attributes.bold, "SGR 0 resets: D");
+  expect(dimCells[4].text == "E" && dimCells[4].attributes.hidden && !dimCells[4].attributes.dim, "SGR 8: E hidden, not dim");
+  expect(dimCells[5].text == "F" && !dimCells[5].attributes.dim && !dimCells[5].attributes.hidden &&
+         dimCells[5].attributes.foreground.red == 2 && dimCells[5].attributes.foreground.blue == 2,
+         "38;2;2;2;2: F is rgb(2,2,2), not dim");
+  expect(dimCells[6].text == "G" && dimCells[6].attributes.dim, "a split ESC [ 2 m still dims G");
+
   return 0;
 }

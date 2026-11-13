@@ -356,7 +356,7 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
         BOOL defaultForegroundCell = (cell.attributes.foreground.kind == cot::TerminalColor::Kind::Default);
         BOOL defaultBackgroundCell = (cell.attributes.background.kind == cot::TerminalColor::Kind::Default);
         BOOL blankDefaultCell = defaultForegroundCell && defaultBackgroundCell &&
-          !cell.attributes.inverse && !cell.attributes.underline && cell.text == " ";
+          !cell.attributes.inverse && !cell.attributes.underline && !cell.attributes.strike && cell.text == " ";
         if (!blankDefaultCell) {
           lastContentColumn = scanColumn + cellWidthCells;
         }
@@ -384,6 +384,12 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
         background = swapped;
         defaultBackground = NO;
       }
+      // SGR 2: the foreground halfway to the cell's background, as Alacritty draws it (bold + dim: the bold face, dimmed).
+      if (cell.attributes.dim) {
+        NSColor *under = defaultBackground ? [theme backgroundColor] : background;
+        foreground = [foreground blendedColorWithFraction:0.5 ofColor:under] ?: foreground;
+      }
+      BOOL hidden = cell.attributes.hidden;  // SGR 8: the cell's background, no text
       BOOL inSelection = NO;
       if (drawSelection) {
         NSInteger firstColInRow = (rowIndex == selStartRow) ? selStartCol : 0;
@@ -406,12 +412,17 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
         flushRun();
       }
       runAttributes = attrs;
-      runText += cell.text;
+      runText += hidden ? std::string((std::size_t)cellWidthCells, ' ') : cell.text;
 
       if (cell.attributes.underline) {
         flushRun();
         [foreground setFill];
         NSRectFill(NSMakeRect(x, y, cellRectWidth, 1.0));
+      }
+      if (cell.attributes.strike && !hidden) {  // SGR 9: a line through the middle of the text
+        flushRun();
+        [foreground setFill];
+        NSRectFill(NSMakeRect(x, y + floor(lineHeight * 0.45), cellRectWidth, 1.0));
       }
 
       x += cellRectWidth;

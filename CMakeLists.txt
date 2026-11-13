@@ -107,6 +107,11 @@ if(COCOATERMINAL_BUILD_TESTS)
   target_link_libraries(CocoaTerminalSessionLifetimeTests PRIVATE CocoaTerminal::CocoaTerminal)
   add_test(NAME CocoaTerminalSessionLifetimeTests COMMAND CocoaTerminalSessionLifetimeTests)
 
+  add_executable(CocoaTerminalGlyphTests tests/COTTerminalGlyphTests.mm)
+  set_target_properties(CocoaTerminalGlyphTests PROPERTIES LINKER_LANGUAGE OBJCXX)
+  target_link_libraries(CocoaTerminalGlyphTests PRIVATE CocoaTerminal::CocoaTerminal)
+  add_test(NAME CocoaTerminalGlyphTests COMMAND CocoaTerminalGlyphTests)
+
   add_executable(CocoaTerminalViewStyleTests tests/COTTerminalViewStyleTests.mm)
   set_target_properties(CocoaTerminalViewStyleTests PROPERTIES LINKER_LANGUAGE OBJCXX)
   target_link_libraries(CocoaTerminalViewStyleTests PRIVATE CocoaTerminal::CocoaTerminal)

@@ -82,6 +82,10 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
 @interface COTTerminalView () {
   COTTerminalSession *_session;
   NSDictionary *_textAttributes;
+  // The theme font's faces for SGR 1 (bold), 3 (italic) and both, indexed by (bold | italic << 1); index 0 is the
+  // regular font. A face the family hasn't got, or one with a different advance (it would break the grid), is the
+  // regular font.
+  NSFont *_styledFonts[4];
   CGFloat _baseFontSize;
   CGFloat _cellWidth;
   CGFloat _lineHeight;
@@ -169,6 +173,9 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   [_session release];
   [_pendingDirtyRows release];
   [_textAttributes release];
+  for (int i = 0; i < 4; ++i) {
+    [_styledFonts[i] release];
+  }
   [super dealloc];
 }
 
@@ -399,9 +406,10 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
         NSRectFill(NSMakeRect(x, y, cellRectWidth, lineHeight));
       }
 
-      NSDictionary *attrs = [foreground isEqual:defaultForeground]
+      NSFont *cellFont = [self fontForBold:cell.attributes.bold italic:cell.attributes.italic];
+      NSDictionary *attrs = ([foreground isEqual:defaultForeground] && cellFont == font)
         ? _textAttributes
-        : [NSDictionary dictionaryWithObjectsAndKeys:font, NSFontAttributeName, foreground, NSForegroundColorAttributeName, nil];
+        : [NSDictionary dictionaryWithObjectsAndKeys:cellFont, NSFontAttributeName, foreground, NSForegroundColorAttributeName, nil];
       if (runAttributes != nil && ![runAttributes isEqual:attrs]) {
         flushRun();
       }
@@ -443,8 +451,10 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
       NSUInteger cursorRow = snapshot->cursorRow;
       NSUInteger cursorColumn = snapshot->cursorColumn;
       NSString *cursorText = @" ";
+      NSFont *cursorFont = font;
       if (cursorRow < rows.size() && cursorColumn < rows[cursorRow].size()) {
         const cot::TerminalCell &cell = rows[cursorRow][cursorColumn];
+        cursorFont = [self fontForBold:cell.attributes.bold italic:cell.attributes.italic];
         if (!cell.continuation && !cell.text.empty()) {
           NSString *temp = [[NSString alloc] initWithBytes:cell.text.data()
                                                     length:cell.text.size()
@@ -456,6 +466,7 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
       }
       NSMutableDictionary *cursorAttributes = [NSMutableDictionary dictionaryWithDictionary:_textAttributes];
       [cursorAttributes setObject:[theme backgroundColor] forKey:NSForegroundColorAttributeName];
+      [cursorAttributes setObject:cursorFont forKey:NSFontAttributeName];
       [cursorText drawAtPoint:NSMakePoint(cursorX, cursorY) withAttributes:cursorAttributes];
     }
   }
@@ -1017,6 +1028,29 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   NSFont *font = [theme font];
   _cellWidth = MAX([@"M" sizeWithAttributes:_textAttributes].width, 1.0);
   _lineHeight = MAX([font ascender] - [font descender] + [theme lineSpacing], 1.0);
+
+  NSFontManager *manager = [NSFontManager sharedFontManager];
+  for (int i = 0; i < 4; ++i) {
+    NSFont *styled = font;
+    if (i != 0 && font != nil) {
+      NSFontTraitMask traits = ((i & 1) ? NSBoldFontMask : 0) | ((i & 2) ? NSItalicFontMask : 0);
+      NSFont *converted = [manager convertFont:font toHaveTrait:traits];
+      NSFontTraitMask got = converted != nil ? [manager traitsOfFont:converted] : 0;
+      CGFloat advance = converted != nil
+        ? [@"M" sizeWithAttributes:[NSDictionary dictionaryWithObject:converted forKey:NSFontAttributeName]].width
+        : 0.0;
+      if (converted != nil && converted != font && (got & traits) == traits && fabs(advance - _cellWidth) < 0.5) {
+        styled = converted;
+      }
+    }
+    [_styledFonts[i] release];
+    _styledFonts[i] = [styled retain];
+  }
+}
+
+- (NSFont *)fontForBold:(BOOL)bold italic:(BOOL)italic {
+  NSFont *styled = _styledFonts[(bold ? 1 : 0) | (italic ? 2 : 0)];
+  return styled != nil ? styled : [[[_session configuration] theme] font];
 }
 
 - (void)updateTerminalSizeFromBounds {

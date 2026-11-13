@@ -192,6 +192,12 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
     fflush(stderr);
   }
 
+  // Key equivalents go to every view in the window, focused or not. Only the focused terminal may take them: a text
+  // field beside a terminal (an embedder's chat box) keeps its Ctrl-V, and in a split only the focused pane pastes.
+  if ([[self window] firstResponder] != self) {
+    return [super performKeyEquivalent:event];
+  }
+
   if ([self sendTerminalControlBytesForEvent:event debug:debugKeys]) {
     return YES;
   }

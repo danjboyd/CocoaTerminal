@@ -448,7 +448,7 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
         BOOL defaultForegroundCell = (cell.attributes.foreground.kind == cot::TerminalColor::Kind::Default);
         BOOL defaultBackgroundCell = (cell.attributes.background.kind == cot::TerminalColor::Kind::Default);
         BOOL blankDefaultCell = defaultForegroundCell && defaultBackgroundCell &&
-          !cell.attributes.inverse && !cell.attributes.underline && cell.text == " ";
+          !cell.attributes.inverse && !cell.attributes.underline && !cell.attributes.strike && cell.text == " ";
         if (!blankDefaultCell) {
           lastContentColumn = scanColumn + cellWidthCells;
         }
@@ -476,6 +476,12 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
         background = swapped;
         defaultBackground = NO;
       }
+      // SGR 2: the foreground halfway to the cell's background, as Alacritty draws it (bold + dim: the bold face, dimmed).
+      if (cell.attributes.dim) {
+        NSColor *under = defaultBackground ? [theme backgroundColor] : background;
+        foreground = [foreground blendedColorWithFraction:0.5 ofColor:under] ?: foreground;
+      }
+      BOOL hidden = cell.attributes.hidden;  // SGR 8: the cell's background, no text
       BOOL inSelection = NO;
       if (drawSelection) {
         NSInteger firstColInRow = (rowIndex == selStartRow) ? selStartCol : 0;
@@ -494,7 +500,7 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
       NSFont *cellFont = [self fontForBold:cell.attributes.bold italic:cell.attributes.italic];
       NSString *cellString = nil;
       NSFont *fallback = nil;
-      if (!cell.text.empty() && (unsigned char)cell.text[0] >= 0x80) {
+      if (!hidden && !cell.text.empty() && (unsigned char)cell.text[0] >= 0x80) {
         cellString = [[[NSString alloc] initWithBytes:cell.text.data() length:cell.text.size() encoding:NSUTF8StringEncoding] autorelease];
         fallback = [self fallbackFontFor:cellString font:cellFont cellWidth:cellRectWidth lineHeight:lineHeight];
       }
@@ -518,13 +524,18 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
           flushRun();
         }
         runAttributes = attrs;
-        runText += cell.text;
+        runText += hidden ? std::string((std::size_t)cellWidthCells, ' ') : cell.text;
       }
 
       if (cell.attributes.underline) {
         flushRun();
         [foreground setFill];
         NSRectFill(NSMakeRect(x, y, cellRectWidth, 1.0));
+      }
+      if (cell.attributes.strike && !hidden) {  // SGR 9: a line through the middle of the text
+        flushRun();
+        [foreground setFill];
+        NSRectFill(NSMakeRect(x, y + floor(lineHeight * 0.45), cellRectWidth, 1.0));
       }
 
       x += cellRectWidth;

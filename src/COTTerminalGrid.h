@@ -31,6 +31,7 @@ struct TerminalAttributes {
   bool inverse = false;
   bool strike = false;
   bool blink = false;
+  bool hidden = false;  // SGR 8 (conceal)
 
   bool operator==(const TerminalAttributes& other) const;
   bool operator!=(const TerminalAttributes& other) const { return !(*this == other); }
@@ -47,6 +48,19 @@ enum class TerminalCursorShape {
   Block = 1,
   Underline = 2,
   Bar = 3,
+};
+
+// libvterm (0.3) has no faint attribute: SGR 2 is dropped. FaintRewriter rewrites the byte stream so it survives as
+// alternate font 1 (SGR 11), which libvterm keeps per cell: 2 becomes 11, 22 (normal intensity) becomes 22;10. Colour
+// sub-parameters (38/48/58;5;n and ;2;r;g;b, and any colon form) pass untouched, and a sequence split across writes
+// is held until it's whole.
+class FaintRewriter {
+public:
+  std::string rewrite(const char* bytes, std::size_t length);
+  static std::string rewriteParameters(const std::string& parameters);
+private:
+  enum class State { Ground, Escape, Csi } state_ = State::Ground;
+  std::string pending_;
 };
 
 class TerminalGrid {
@@ -126,6 +140,7 @@ private:
   void rebuildDirtyVisibleCells();
   void rebuildVisibleRow(std::size_t row);
   void snoopPrivateModes(const char* bytes, std::size_t length);
+  FaintRewriter faint_;
   void appendScrollback(std::vector<TerminalCell> line);
   TerminalCell cellFromVTermOpaque(const void* src) const;
   TerminalCell makeBlankCell() const;

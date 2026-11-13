@@ -82,6 +82,7 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
 @interface COTTerminalView () {
   COTTerminalSession *_session;
   NSDictionary *_textAttributes;
+  NSMutableDictionary *_fallbackFonts;  // by character: a covering font sized to the cell, or NSNull (see -fallbackFontFor:)
   CGFloat _baseFontSize;
   CGFloat _cellWidth;
   CGFloat _lineHeight;
@@ -104,6 +105,54 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   NSUInteger _perfFullRedraws;
 }
 @end
+
+#if !defined(__APPLE__)
+#include <dlfcn.h>
+#include <fontconfig/fontconfig.h>
+
+// A font for a character the terminal's font hasn't got (Claude Code's spinner, ✢ ✳ ✶ ✻ ✽ ● ⏺): fontconfig's choice,
+// as Alacritty's, by PostScript name (the names GNUstep's fonts go by). fontconfig is looked up at run time (GNUstep's
+// backend has it loaded), so nothing new is linked; without it, nil, and the character draws as before.
+static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
+  static void *library;
+  static BOOL tried;
+  if (!tried) {
+    tried = YES;
+    library = dlopen("libfontconfig.so.1", RTLD_LAZY | RTLD_NOLOAD);
+    if (!library) library = dlopen("libfontconfig.so.1", RTLD_LAZY);
+  }
+  if (!library) return nil;
+#define COT_FC(name) __typeof__(&name) p##name = (__typeof__(&name))dlsym(library, #name)
+  COT_FC(FcPatternCreate); COT_FC(FcPatternDestroy); COT_FC(FcPatternAddString); COT_FC(FcPatternAddCharSet);
+  COT_FC(FcCharSetCreate); COT_FC(FcCharSetDestroy); COT_FC(FcCharSetAddChar); COT_FC(FcCharSetHasChar);
+  COT_FC(FcConfigSubstitute); COT_FC(FcDefaultSubstitute); COT_FC(FcFontMatch); COT_FC(FcPatternGetString);
+  COT_FC(FcPatternGetCharSet);
+#undef COT_FC
+  if (!pFcPatternCreate || !pFcPatternDestroy || !pFcPatternAddString || !pFcPatternAddCharSet || !pFcCharSetCreate ||
+      !pFcCharSetDestroy || !pFcCharSetAddChar || !pFcCharSetHasChar || !pFcConfigSubstitute || !pFcDefaultSubstitute ||
+      !pFcFontMatch || !pFcPatternGetString || !pFcPatternGetCharSet)
+    return nil;
+  FcPattern *pattern = pFcPatternCreate();
+  if (family.length) pFcPatternAddString(pattern, FC_FAMILY, (const FcChar8 *)[family UTF8String]);
+  FcCharSet *wanted = pFcCharSetCreate();
+  pFcCharSetAddChar(wanted, character);
+  pFcPatternAddCharSet(pattern, FC_CHARSET, wanted);
+  pFcConfigSubstitute(NULL, pattern, FcMatchPattern);
+  pFcDefaultSubstitute(pattern);
+  FcResult result;
+  FcPattern *match = pFcFontMatch(NULL, pattern, &result);
+  NSString *name = nil;
+  FcCharSet *has = NULL;
+  FcChar8 *postscript = NULL;
+  if (match && pFcPatternGetCharSet(match, FC_CHARSET, 0, &has) == FcResultMatch && pFcCharSetHasChar(has, character) &&
+      pFcPatternGetString(match, FC_POSTSCRIPT_NAME, 0, &postscript) == FcResultMatch && postscript)
+    name = [NSString stringWithUTF8String:(const char *)postscript];
+  if (match) pFcPatternDestroy(match);
+  pFcPatternDestroy(pattern);
+  pFcCharSetDestroy(wanted);
+  return name;
+}
+#endif
 
 @implementation COTTerminalView
 
@@ -169,6 +218,7 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   [_session release];
   [_pendingDirtyRows release];
   [_textAttributes release];
+  [_fallbackFonts release];
   [super dealloc];
 }
 
@@ -399,14 +449,34 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
         NSRectFill(NSMakeRect(x, y, cellRectWidth, lineHeight));
       }
 
-      NSDictionary *attrs = [foreground isEqual:defaultForeground]
-        ? _textAttributes
-        : [NSDictionary dictionaryWithObjectsAndKeys:font, NSFontAttributeName, foreground, NSForegroundColorAttributeName, nil];
-      if (runAttributes != nil && ![runAttributes isEqual:attrs]) {
-        flushRun();
+      NSString *cellString = nil;
+      NSFont *fallback = nil;
+      if (!cell.text.empty() && (unsigned char)cell.text[0] >= 0x80) {
+        cellString = [[[NSString alloc] initWithBytes:cell.text.data() length:cell.text.size() encoding:NSUTF8StringEncoding] autorelease];
+        fallback = [self fallbackFontFor:cellString font:font cellWidth:cellRectWidth lineHeight:lineHeight];
       }
-      runAttributes = attrs;
-      runText += cell.text;
+      if (fallback) {
+        // Drawn on its own, centred in its cell; the line so far is drawn first and the rest starts after this cell.
+        flushRun();
+        [line drawAtPoint:NSMakePoint(lineStartX, y)];
+        [line release];
+        line = [[NSMutableAttributedString alloc] init];
+        runAttributes = nil;
+        NSDictionary *glyphAttrs = [NSDictionary dictionaryWithObjectsAndKeys:fallback, NSFontAttributeName, foreground, NSForegroundColorAttributeName, nil];
+        NSSize size = [cellString sizeWithAttributes:glyphAttrs];
+        [cellString drawAtPoint:NSMakePoint(x + MAX(0, (cellRectWidth - size.width) / 2), y + MAX(0, (lineHeight - size.height) / 2))
+                 withAttributes:glyphAttrs];
+        lineStartX = x + cellRectWidth;
+      } else {
+        NSDictionary *attrs = [foreground isEqual:defaultForeground]
+          ? _textAttributes
+          : [NSDictionary dictionaryWithObjectsAndKeys:font, NSFontAttributeName, foreground, NSForegroundColorAttributeName, nil];
+        if (runAttributes != nil && ![runAttributes isEqual:attrs]) {
+          flushRun();
+        }
+        runAttributes = attrs;
+        runText += cell.text;
+      }
 
       if (cell.attributes.underline) {
         flushRun();
@@ -1007,6 +1077,39 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   return NO;
 }
 
+// A cell whose character `font` hasn't got: fontconfig's covering font, at a size that fits the cell, so the grid never
+// shifts; nil when `font` has it (or nothing better is found). Cached per character until the font changes.
+- (NSFont *)fallbackFontFor:(NSString *)text font:(NSFont *)font cellWidth:(CGFloat)cellWidth lineHeight:(CGFloat)lineHeight {
+#if defined(__APPLE__)
+  (void)text; (void)font; (void)cellWidth; (void)lineHeight;
+  return nil;  // Core Text cascades on its own
+#else
+  if (text.length == 0 || [text characterAtIndex:0] < 0x80) return nil;
+  UTF32Char character = [text characterAtIndex:0];
+  unichar low = text.length > 1 ? [text characterAtIndex:1] : 0;
+  if (character >= 0xD800 && character <= 0xDBFF && low >= 0xDC00 && low <= 0xDFFF)
+    character = 0x10000 + ((character - 0xD800) << 10) + (low - 0xDC00);
+  NSCharacterSet *covered = [font coveredCharacterSet];
+  if (!covered || [covered longCharacterIsMember:character]) return nil;
+  NSString *key = [NSString stringWithFormat:@"%u %@ %.1f", (unsigned)character, [font fontName], [font pointSize]];
+  if (!_fallbackFonts) _fallbackFonts = [[NSMutableDictionary alloc] init];
+  id cached = [_fallbackFonts objectForKey:key];
+  if (cached) return cached == [NSNull null] ? nil : cached;
+  NSFont *fallback = nil;
+  NSString *name = COTFallbackFontName(character, [font familyName]);
+  if (name) fallback = [NSFont fontWithName:name size:[font pointSize]];
+  if (fallback) {
+    // Fit the cell: no wider than it, no taller than the line.
+    CGFloat width = [text sizeWithAttributes:[NSDictionary dictionaryWithObject:fallback forKey:NSFontAttributeName]].width;
+    CGFloat height = [fallback ascender] - [fallback descender];
+    CGFloat scale = MIN(1.0, MIN(width > 0 ? cellWidth / width : 1.0, height > 0 ? lineHeight / height : 1.0));
+    if (scale < 0.999) fallback = [NSFont fontWithName:name size:floor([font pointSize] * scale * 10) / 10] ?: fallback;
+  }
+  [_fallbackFonts setObject:fallback ?: (id)[NSNull null] forKey:key];
+  return fallback;
+#endif
+}
+
 - (void)rebuildTextAttributes {
   [_textAttributes release];
   COTTerminalTheme *theme = [[_session configuration] theme];
@@ -1017,6 +1120,7 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   NSFont *font = [theme font];
   _cellWidth = MAX([@"M" sizeWithAttributes:_textAttributes].width, 1.0);
   _lineHeight = MAX([font ascender] - [font descender] + [theme lineSpacing], 1.0);
+  [_fallbackFonts removeAllObjects];
 }
 
 - (void)updateTerminalSizeFromBounds {

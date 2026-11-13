@@ -52,7 +52,18 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     nil];
 }
 
+// What main-thread callbacks hold instead of the session. The session clears it at the start of -dealloc (on the main
+// thread), so a callback queued while the session was being freed finds nil and does nothing.
+@interface COTSessionHandle : NSObject {
+@public
+  COTTerminalSession *session;  // not retained
+}
+@end
+@implementation COTSessionHandle
+@end
+
 @interface COTTerminalSession () {
+  COTSessionHandle *_handle;
   COTTerminalConfiguration *_configuration;
   cot::TerminalGrid *_grid;
   int _masterFd;
@@ -126,6 +137,20 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   return [snapshot autorelease];
 }
 
+// Main-thread callbacks reach the session through its handle, never through a retain of self. -dealloc waits on the
+// terminal queue (dispatch_sync); a block running there in the meantime used to [self retain] a session whose dealloc
+// had begun, and its main-thread block then ran on freed memory once dealloc finished.
+- (void)deliverOnMain:(void (^)(COTTerminalSession *session))block {
+  COTSessionHandle *handle = [_handle retain];
+  void (^copied)(COTTerminalSession *) = [block copy];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    COTTerminalSession *session = handle->session;
+    if (session != nil) copied(session);
+    [copied release];
+    [handle release];
+  });
+}
+
 - (void)publishSnapshotAndNotify:(BOOL)notify {
   COTTerminalSnapshot *snapshot = [[self snapshotFromGrid] retain];
   [self recordPerfPublishWithSnapshot:snapshot];
@@ -136,15 +161,13 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   if (!notify) {
     return;
   }
-  COTTerminalSession *session = [self retain];
-  dispatch_async(dispatch_get_main_queue(), ^{
+  [self deliverOnMain:^(COTTerminalSession *session) {
     id<COTTerminalDelegate> delegate = [[session delegate] retain];
     if ([delegate respondsToSelector:@selector(terminalSessionDidUpdateScreen:)]) {
       [delegate terminalSessionDidUpdateScreen:session];
     }
     [delegate release];
-    [session release];
-  });
+  }];
 }
 
 - (void)performGridMutation:(dispatch_block_t)block notify:(BOOL)notify {
@@ -186,6 +209,8 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     _running = NO;
     _terminalQueue = dispatch_queue_create("org.cocoaterminal.session", DISPATCH_QUEUE_SERIAL);
     _snapshotLock = [[NSLock alloc] init];
+    _handle = [[COTSessionHandle alloc] init];
+    _handle->session = self;
     _perfLoggingEnabled = getenv("COCOATERMINAL_PERF_LOG") != NULL;
     _perfLastLogTime = [NSDate timeIntervalSinceReferenceDate];
     [self publishSnapshotAndNotify:NO];
@@ -263,9 +288,8 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   if (value == nil) {
     value = @"";
   }
-  NSString *ownedValue = [value copy];
-  COTTerminalSession *session = [self retain];
-  dispatch_async(dispatch_get_main_queue(), ^{
+  NSString *ownedValue = [value copy];  // the copied block keeps its own reference
+  [self deliverOnMain:^(COTTerminalSession *session) {
     id<COTTerminalDelegate> delegate = [[session delegate] retain];
     if ([delegate respondsToSelector:@selector(terminalSession:didChangeTitle:)]) {
       [delegate terminalSession:session didChangeTitle:ownedValue];
@@ -275,21 +299,18 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
                                                         object:session
                                                       userInfo:userInfo];
     [delegate release];
-    [ownedValue release];
-    [session release];
-  });
+  }];
+  [ownedValue release];
 }
 
 - (void)deliverBell {
-  COTTerminalSession *session = [self retain];
-  dispatch_async(dispatch_get_main_queue(), ^{
+  [self deliverOnMain:^(COTTerminalSession *session) {
     id<COTTerminalDelegate> delegate = [[session delegate] retain];
     if ([delegate respondsToSelector:@selector(terminalSessionDidRequestBell:)]) {
       [delegate terminalSessionDidRequestBell:session];
     }
     [delegate release];
-    [session release];
-  });
+  }];
 }
 
 - (void)deliverClipboardWrite:(const std::string &)data {
@@ -340,6 +361,7 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 }
 
 - (void)dealloc {
+  _handle->session = nil;  // first: anything queued for the main thread now finds nothing
   [self terminate];
   dispatch_sync(_terminalQueue, ^{
     delete _grid;
@@ -349,6 +371,7 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   [_snapshotLock release];
   [_snapshot release];
   [_lastClipboardWrite release];
+  [_handle release];
   [super dealloc];
 }
 

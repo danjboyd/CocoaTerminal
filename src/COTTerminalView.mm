@@ -105,6 +105,30 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
 }
 @end
 
+// The key as macOS numbers it. On macOS that's the event's keyCode. GNUstep's keyCode is the X11 keycode, which collides
+// with these (X 51 is backslash/bar, so "|" sent Backspace; 24/27/29 are q/r/y, so Ctrl+Q/R/Y zoomed), so there the
+// function-key character stands in, and any other key has no code.
+static unsigned short COTMacKeyCode(NSEvent *event) {
+#if defined(__APPLE__)
+  return [event keyCode];
+#else
+  NSString *base = [event charactersIgnoringModifiers];
+  unichar c = [base length] > 0 ? [base characterAtIndex:0] : 0;
+  switch (c) {
+  case NSLeftArrowFunctionKey: return 123;
+  case NSRightArrowFunctionKey: return 124;
+  case NSDownArrowFunctionKey: return 125;
+  case NSUpArrowFunctionKey: return 126;
+  case NSHomeFunctionKey: return 115;
+  case NSEndFunctionKey: return 119;
+  case NSPageUpFunctionKey: return 116;
+  case NSPageDownFunctionKey: return 121;
+  case NSDeleteFunctionKey: return 117;
+  default: return 0xFFFF;
+  }
+#endif
+}
+
 @implementation COTTerminalView
 
 - (void)setFrame:(NSRect)frameRect {
@@ -513,7 +537,7 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   if (sequence == nil && [characters length] > 0) {
     sequence = COTSequenceForFunctionKey([characters characterAtIndex:0]);
   }
-  switch ([event keyCode]) {
+  switch (COTMacKeyCode(event)) {
   case 123:
     if (sequence == nil) { sequence = @"\033[D"; }
     break;
@@ -944,7 +968,7 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
     return NO;
   }
   NSInteger pageStep = MAX((NSInteger)1, (NSInteger)([_session rows] / 2));
-  unsigned short keyCode = [event keyCode];
+  unsigned short keyCode = COTMacKeyCode(event);
   if (hasCmd) {
     switch (keyCode) {
     case 126:
@@ -988,7 +1012,7 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   NSString *charactersIgnoringModifiers = [event charactersIgnoringModifiers];
   unichar character = [characters length] > 0 ? [characters characterAtIndex:0] : 0;
   unichar baseCharacter = [charactersIgnoringModifiers length] > 0 ? [charactersIgnoringModifiers characterAtIndex:0] : 0;
-  unsigned short keyCode = [event keyCode];
+  unsigned short keyCode = COTMacKeyCode(event);
 
   if (character == '+' || baseCharacter == '+' || character == '=' || baseCharacter == '=' ||
       keyCode == 24 || keyCode == 69) {

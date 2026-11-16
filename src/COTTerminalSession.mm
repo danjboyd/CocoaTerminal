@@ -767,7 +767,9 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 }
 
 - (void)dealloc {
-  _handle->session = nil;  // first: anything queued for the main thread now finds nothing
+  // First: anything queued for the main thread now finds nothing. No handle yet when -init refused the
+  // configuration (the observe policy's checks run before it's made).
+  if (_handle) _handle->session = nil;
   // HUP once and retire; the shared lifecycle keeps reaping after we are gone.
   [self terminate];
   if (_terminalQueue != NULL) [self withTransportOwner:^{

@@ -159,7 +159,8 @@ int main() {
       (void)exception;
     }
     if (havePasteboard && [[NSFileManager defaultManager] fileExistsAtPath:bash]) {
-      NSString *script = @"stty raw -echo; printf '\\033]52;c;?\\007'; IFS= read -r -d $'\\a' reply; stty sane; "
+      // libvterm ends its reply with ST (ESC \), not BEL: read up to the backslash and drop the ESC.
+      NSString *script = @"stty raw -echo; printf '\\033]52;c;?\\007'; IFS= read -r -d '\\\\' reply; reply=${reply%$'\\e'}; stty sane; "
                           "printf 'CLIP=%s\\r\\n' \"$(printf '%s' \"${reply##*;}\" | base64 -d)\"; sleep 0.3";
       COTTerminalSession *session = [[COTTerminalSession alloc]
         initWithConfiguration:configurationWithCommand([NSArray arrayWithObjects:bash, @"-c", script, nil])];

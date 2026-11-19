@@ -86,6 +86,8 @@ static NSFont *COTFontWithFamily(NSString *family, CGFloat size) {
   theme.name = @"Alacritty Inspired Dark";
 #if defined(__APPLE__)
   theme.fontFamily = @"Intel One Mono";
+#elif defined(_WIN32)
+  theme.fontFamily = @"Consolas";  // on every Windows; DejaVu isn't
 #else
   theme.fontFamily = @"DejaVu Sans Mono";
 #endif

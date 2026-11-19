@@ -4,14 +4,16 @@
 set -eu
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-build_dir="$repo_dir/build"
+build_dir="${COCOATERMINAL_BUILD_DIR:-$repo_dir/build}"
 artifact_dir="${COCOATERMINAL_SCENARIO_DIR:-/tmp/coterminal-scenarios}"
 
-required_scenarios="smoke cursor cursor-block zoom-shortcuts exit-closes-demo terminal-env delete-editing mouse-no-leak ansi-colors unicode-width scrollback alternate-screen keyboard-input mouse-reporting tmux-mouse-resize tmux readline-editing fullscreen-app-baseline line-drawing-inverse vim resize resize-fullscreen-app ctrl-letter-bytes cmd-letter-bytes-gnustep tmux-ctrl-a-split menu-shortcut-dispatch osc52-clipboard config-toml"
+required_scenarios="${COCOATERMINAL_SCENARIOS:-smoke cursor cursor-block zoom-shortcuts exit-closes-demo terminal-env delete-editing mouse-no-leak ansi-colors unicode-width scrollback alternate-screen keyboard-input mouse-reporting tmux-mouse-resize tmux readline-editing fullscreen-app-baseline line-drawing-inverse vim resize resize-fullscreen-app ctrl-letter-bytes cmd-letter-bytes-gnustep tmux-ctrl-a-split menu-shortcut-dispatch osc52-clipboard config-toml}"
 
-cmake -S "$repo_dir" -B "$build_dir" -G Ninja
-cmake --build "$build_dir"
-ctest --test-dir "$build_dir" --output-on-failure
+if [ -z "${COCOATERMINAL_SKIP_BUILD:-}" ]; then
+  cmake -S "$repo_dir" -B "$build_dir" -G Ninja
+  cmake --build "$build_dir"
+  ctest --test-dir "$build_dir" --output-on-failure
+fi
 
 rm -rf "$artifact_dir"
 mkdir -p "$artifact_dir"

@@ -2,7 +2,7 @@
 
 CocoaTerminal is an embeddable Cocoa/AppKit terminal view for GNUstep and macOS. The project is intentionally small at the UI boundary and keeps terminal state in a portable core so the widget can be used by other applications as a library.
 
-The first milestone targets GNUstep/Linux and macOS with a Unix PTY-backed shell, a minimal terminal grid, and a demo app. Windows/GNUstep support is represented by the process/session abstraction and will use ConPTY in a later milestone.
+It runs on GNUstep/Linux and macOS with a Unix PTY-backed shell, and on GNUstep/Windows (MSYS2) with a ConPTY-backed one.
 
 ## Build
 
@@ -13,6 +13,33 @@ ctest --test-dir build
 ```
 
 On this machine, GNUstep is installed under `/usr/GNUstep` and `gnustep-config` is available at `/usr/GNUstep/System/Tools/gnustep-config`.
+
+### Windows (MSYS2 CLANG64)
+
+Needs Windows 10 1809 or later (ConPTY) and MSYS2's CLANG64 GNUstep packages:
+
+```sh
+pacman -S --needed mingw-w64-clang-x86_64-{gnustep-base,gnustep-gui,gnustep-back,libvterm,cmake,ninja}
+cmake -S . -B build-win -G Ninja \
+  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_OBJC_COMPILER=clang -DCMAKE_OBJCXX_COMPILER=clang++
+cmake --build build-win
+ctest --test-dir build-win
+```
+
+Run from a CLANG64 shell, or put `C:\msys64\clang64\bin` on `PATH` for the DLLs. The shell is `$SHELL` when that's a
+Windows path, else `powershell.exe`; set `[shell] program` in the config for another (`cmd.exe`, `pwsh.exe`,
+`C:\msys64\usr\bin\bash.exe`, `wsl.exe`).
+
+Differences from Linux worth knowing:
+
+- The session's output arrives from a reader thread; `-poll` does nothing.
+- An exit status is the process's exit code, not a `waitpid` status.
+- GNUstep's Windows build doesn't drain the main dispatch queue on its own, so the library hooks it into the main run
+  loop when the first session is created.
+- ConPTY forwards a mouse-mode request (`CSI ? 1000 h` and friends) only from a program that reads VT input (tmux, vim,
+  MSYS2's shells, ssh, WSL); from others it's dropped, as they couldn't read the reports.
+- MSYS2's `gnustep-gui.pc` omits `-lgnustep-gui`; the CMake build adds it.
 
 ## Demo Configuration
 
@@ -65,6 +92,12 @@ The demo app can test the library through the full GUI path and write its own sc
 `selftest-demo.sh` is the fast smoke check. `test-demo-scenarios.sh` runs a broader matrix covering filled block cursor rendering, Ctrl zoom shortcuts, demo exit behavior, PTY environment defaults, delete/editing behavior, mouse no-leak behavior, color, Unicode, scrollback, alternate screen, keyboard, mouse reporting and drag delivery, tmux, readline, Vim, and fullscreen resize scenarios. Each scenario must pass and writes capability/observation fields into its state file.
 
 Scenario artifacts are written to `/tmp/coterminal-scenarios` by default. Each scenario writes a PNG screenshot and a text state report.
+
+The runner takes `COCOATERMINAL_BUILD_DIR`, `COCOATERMINAL_SKIP_BUILD=1` (use an existing build),
+`COCOATERMINAL_SCENARIOS` (a space-separated subset) and `COCOATERMINAL_SCENARIO_DIR`. On Windows, run it from MSYS2's
+bash with `MSYSTEM=CLANG64`: the scenarios' scripts run in MSYS2's `sh` on ConPTY (tmux, vim and python3 come from MSYS2),
+or in `$COCOATERMINAL_SCENARIO_SHELL`. A scenario's deadline is 5 seconds (20 on Windows, where a login shell is slow to
+start), or `$COCOATERMINAL_SCENARIO_TIMEOUT`.
 
 ## Layout
 

@@ -23,6 +23,24 @@ static NSString *COTHexStringForColor(NSColor *color) {
           (unsigned int)lrint(blue * 255.0)];
 }
 
+// The POSIX shell scenario scripts run in. On Windows, MSYS2's (its sh runs on ConPTY like any console program), or
+// $COCOATERMINAL_SCENARIO_SHELL.
+static NSString *COTScenarioShell(void) {
+  NSString *configured = [[[NSProcessInfo processInfo] environment] objectForKey:@"COCOATERMINAL_SCENARIO_SHELL"];
+  if ([configured length] > 0) {
+    return configured;
+  }
+#if defined(_WIN32)
+  NSString *msys = @"C:\\msys64\\usr\\bin\\sh.exe";
+  if ([[NSFileManager defaultManager] fileExistsAtPath:msys]) {
+    return msys;
+  }
+  return @"sh.exe";
+#else
+  return @"/bin/sh";
+#endif
+}
+
 static NSString *COTPythonScenarioScript(NSString *body) {
   return [NSString stringWithFormat:@"python3 - <<'PY'\n%@\nPY", body];
 }
@@ -159,6 +177,20 @@ static NSString *COTPythonScenarioScript(NSString *body) {
        "print('COT_SCENARIO_DONE:keyboard-input')\n");
     scenario.expectedStatus = @"pass";
     scenario.expectedReason = @"implemented for current scenario coverage";
+#if defined(_WIN32)
+  // ConPTY passes a mouse-mode request on only from a program reading VT input (ENABLE_VIRTUAL_TERMINAL_INPUT), as
+  // MSYS2's sh does and Python doesn't: one that couldn't read the reports anyway.
+  } else if ([name isEqualToString:@"mouse-reporting"] || [name isEqualToString:@"tmux-mouse-resize"]) {
+    scenario.script = [NSString stringWithFormat:
+      @"printf 'COT_SCENARIO_BEGIN:%@\\r\\n'; "
+       "printf '\\033[?1000h\\033[?1002h\\033[?1006hmouse-mode-enabled\\r\\n'; "
+       "%@"
+       "printf 'COT_SCENARIO_DONE:%@\\r\\n'; sleep 0.2",
+      name, [name isEqualToString:@"mouse-reporting"] ? @"printf 'COT_MOUSE_EXPECTED: click drag wheel modifiers\\r\\n'; " : @"",
+      name];
+    scenario.expectedStatus = @"pass";
+    scenario.expectedReason = @"implemented for current scenario coverage";
+#endif
   } else if ([name isEqualToString:@"mouse-reporting"]) {
     scenario.script = COTPythonScenarioScript(
       @"print('COT_SCENARIO_BEGIN:mouse-reporting')\n"
@@ -500,7 +532,16 @@ static NSString *COTPythonScenarioScript(NSString *body) {
       exit(4);
     }
     [_window setTitle:[NSString stringWithFormat:@"CocoaTerminal Scenario: %@", [_scenario name]]];
-    [configuration setShellCommand:[NSArray arrayWithObjects:@"/bin/sh", @"-lc", [_scenario script], nil]];
+    [configuration setShellCommand:[NSArray arrayWithObjects:COTScenarioShell(), @"-lc", [_scenario script], nil]];
+#if defined(_WIN32)
+    // MSYS2's login profile would otherwise cd to $HOME; the scenarios expect to start where the demo did.
+    NSMutableDictionary *environment = [NSMutableDictionary dictionaryWithDictionary:[configuration environment]];
+    [environment setObject:@"1" forKey:@"CHERE_INVOKING"];
+    if ([environment objectForKey:@"MSYSTEM"] == nil) {
+      [environment setObject:@"CLANG64" forKey:@"MSYSTEM"];
+    }
+    [configuration setEnvironment:environment];
+#endif
   } else {
     [_window setTitle:@"CocoaTerminal Demo"];
     [configuration setExitBehavior:COTTerminalExitBehaviorTerminateApplication];
@@ -529,7 +570,17 @@ static NSString *COTPythonScenarioScript(NSString *body) {
 
   if ([_options selfTest]) {
     _scenarioStart = [[NSDate date] retain];
-    _scenarioDeadline = [[NSDate dateWithTimeIntervalSinceNow:5.0] retain];
+    // A scenario ends at its sentinel, so the deadline only matters when one fails. MSYS2's login shell alone can take
+    // seconds to start on Windows.
+    NSTimeInterval timeout = 5.0;
+#if defined(_WIN32)
+    timeout = 20.0;
+#endif
+    const char *timeoutOverride = getenv("COCOATERMINAL_SCENARIO_TIMEOUT");
+    if (timeoutOverride != NULL && atof(timeoutOverride) > 0) {
+      timeout = atof(timeoutOverride);
+    }
+    _scenarioDeadline = [[NSDate dateWithTimeIntervalSinceNow:timeout] retain];
     _scenarioTimer = [[NSTimer scheduledTimerWithTimeInterval:(1.0 / 30.0)
                                                        target:self
                                                      selector:@selector(runScenarioTick:)
@@ -932,6 +983,11 @@ static NSString *COTPythonScenarioScript(NSString *body) {
   [_scenarioTimer invalidate];
   [_window displayIfNeeded];
   [_terminalView displayIfNeeded];
+  if ([[_scenario name] isEqualToString:@"resize-fullscreen-app"]) {
+    // Once the app has run, not right after -setFrame:: a window server may apply the new frame later (Win32 does).
+    _resizeAfterColumns = [[_terminalView session] columns];
+    _resizeAfterRows = [[_terminalView session] rows];
+  }
 
   BOOL wroteScreenshot = YES;
   BOOL wroteState = YES;

@@ -14,13 +14,20 @@
   self = [super init];
   if (self) {
     NSString *shell = [[[NSProcessInfo processInfo] environment] objectForKey:@"SHELL"];
-    if ([shell length] == 0) {
 #if defined(_WIN32)
-      shell = @"powershell.exe";
-#else
-      shell = @"/bin/sh";
-#endif
+    // MSYS and Cygwin set SHELL to a POSIX path (/usr/bin/bash) that CreateProcess can't start; only a Windows path that
+    // exists counts.
+    if ([shell length] > 0 && ([shell hasPrefix:@"/"] || ![[NSFileManager defaultManager] fileExistsAtPath:shell])) {
+      shell = nil;
     }
+    if ([shell length] == 0) {
+      shell = @"powershell.exe";
+    }
+#else
+    if ([shell length] == 0) {
+      shell = @"/bin/sh";
+    }
+#endif
 
     _terminalType = [@"xterm-256color" copy];
     _shellCommand = [[NSArray alloc] initWithObjects:shell, nil];

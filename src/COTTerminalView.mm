@@ -54,9 +54,33 @@ static NSString *COTSequenceForFunctionKey(unichar key) {
   case NSDeleteFunctionKey:
   case NSDeleteCharFunctionKey:
     return @"\033[3~";
+  // xterm's function keys (what TERM=xterm-256color promises).
+  case NSF1FunctionKey: return @"\033OP";
+  case NSF2FunctionKey: return @"\033OQ";
+  case NSF3FunctionKey: return @"\033OR";
+  case NSF4FunctionKey: return @"\033OS";
+  case NSF5FunctionKey: return @"\033[15~";
+  case NSF6FunctionKey: return @"\033[17~";
+  case NSF7FunctionKey: return @"\033[18~";
+  case NSF8FunctionKey: return @"\033[19~";
+  case NSF9FunctionKey: return @"\033[20~";
+  case NSF10FunctionKey: return @"\033[21~";
+  case NSF11FunctionKey: return @"\033[23~";
+  case NSF12FunctionKey: return @"\033[24~";
   default:
     return nil;
   }
+}
+
+// Shift+Tab, however the backend reports it: Tab with Shift, or the back-tab character as the key itself (not as the
+// control character Ctrl+Y also makes, whose key is "y").
+static BOOL COTIsBackTab(NSEvent *event) {
+  NSString *base = [event charactersIgnoringModifiers];
+  unichar key = [base length] > 0 ? [base characterAtIndex:0] : 0;
+  if (key == NSBackTabCharacter) {
+    return YES;
+  }
+  return key == NSTabCharacter && ([event modifierFlags] & NSShiftKeyMask) != 0;
 }
 
 static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTerminalTheme *theme, BOOL foreground) {
@@ -140,7 +164,21 @@ static unsigned short COTMacKeyCode(NSEvent *event) {
 }
 
 #if !defined(__APPLE__)
+#if defined(_WIN32)
+// GNUstep's Foundation brings in the Win32 loader. Its Windows backend (Cairo) links libfontconfig-1.dll, so that's
+// normally loaded already.
+#define RTLD_LAZY 0
+#define RTLD_NOLOAD 1
+static void *dlopen(const char *name, int flags) {
+  (void)name;
+  HMODULE module = GetModuleHandleA("libfontconfig-1.dll");
+  if (module == NULL && !(flags & RTLD_NOLOAD)) module = LoadLibraryA("libfontconfig-1.dll");
+  return (void *)module;
+}
+static void *dlsym(void *module, const char *name) { return (void *)GetProcAddress((HMODULE)module, name); }
+#else
 #include <dlfcn.h>
+#endif
 #include <fontconfig/fontconfig.h>
 
 // A font for a character the terminal's font hasn't got (Claude Code's spinner, ✢ ✳ ✶ ✻ ✽ ● ⏺): fontconfig's choice,
@@ -345,6 +383,18 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
   }
 
   [self displayIfNeeded];
+#if defined(_WIN32)
+  // GNUstep's Win32 Cairo backend draws no text into an off-screen cache, so read back what the window shows.
+  if ([self window] != nil && [[self window] isVisible] && [self canDraw]) {
+    [self lockFocus];
+    NSBitmapImageRep *shown = [[[NSBitmapImageRep alloc] initWithFocusedViewRect:bounds] autorelease];
+    [self unlockFocus];
+    NSData *shownData = [shown representationUsingType:NSPNGFileType properties:[NSDictionary dictionary]];
+    if ([shownData length] > 0) {
+      return shownData;
+    }
+  }
+#endif
   NSBitmapImageRep *bitmap = [self bitmapImageRepForCachingDisplayInRect:bounds];
   if (bitmap == nil) {
     if (error != NULL) {
@@ -639,6 +689,9 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
   }
   if (sequence == nil && [characters length] > 0) {
     sequence = COTSequenceForFunctionKey([characters characterAtIndex:0]);
+  }
+  if (sequence == nil && COTIsBackTab(event)) {
+    sequence = @"\033[Z";
   }
   switch (COTMacKeyCode(event)) {
   case 123:

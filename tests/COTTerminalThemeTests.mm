@@ -20,7 +20,13 @@ int main() {
   COTTerminalTheme *theme = [configuration theme];
 
   expect([[theme name] isEqualToString:@"Alacritty Inspired Dark"], "unexpected default theme name");
+#if defined(__APPLE__)
   expect([[theme fontFamily] isEqualToString:@"Intel One Mono"], "unexpected default font family");
+#elif defined(_WIN32)
+  expect([[theme fontFamily] isEqualToString:@"Consolas"], "unexpected default font family");
+#else
+  expect([[theme fontFamily] isEqualToString:@"DejaVu Sans Mono"], "unexpected default font family");
+#endif
   expect([theme fontSize] == 13.0, "unexpected default font size");
   expect([theme cursorStyle] == COTTerminalCursorStyleBlock, "unexpected default cursor style");
   expect([[configuration terminalType] isEqualToString:@"xterm-256color"], "unexpected default terminal type");

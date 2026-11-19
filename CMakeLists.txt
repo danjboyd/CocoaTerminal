@@ -28,6 +28,7 @@ else()
 endif()
 
 add_library(CocoaTerminal
+  src/COTConPTY.cpp
   src/COTTerminalConfiguration.mm
   src/COTTerminalGrid.cpp
   src/COTTerminalSession.mm
@@ -64,7 +65,14 @@ else()
   target_compile_options(CocoaTerminal PUBLIC "$<$<OR:$<COMPILE_LANGUAGE:OBJC>,$<COMPILE_LANGUAGE:OBJCXX>>:-Wno-nullability-completeness>")
   target_link_directories(CocoaTerminal PUBLIC ${GNUSTEP_GUI_LIBRARY_DIRS})
   target_link_options(CocoaTerminal PUBLIC ${GNUSTEP_GUI_LDFLAGS_OTHER})
-  target_link_libraries(CocoaTerminal PUBLIC ${GNUSTEP_GUI_LIBRARIES} util)
+  target_link_libraries(CocoaTerminal PUBLIC ${GNUSTEP_GUI_LIBRARIES})
+  if(NOT "gnustep-gui" IN_LIST GNUSTEP_GUI_LIBRARIES)
+    # MSYS2's gnustep-gui.pc lists only gnustep-base.
+    target_link_libraries(CocoaTerminal PUBLIC gnustep-gui)
+  endif()
+  if(NOT WIN32)
+    target_link_libraries(CocoaTerminal PUBLIC util)  # forkpty
+  endif()
   target_link_libraries(CocoaTerminal PUBLIC dispatch)
 endif()
 
@@ -106,6 +114,11 @@ if(COCOATERMINAL_BUILD_TESTS)
   set_target_properties(CocoaTerminalSessionLifetimeTests PROPERTIES LINKER_LANGUAGE OBJCXX)
   target_link_libraries(CocoaTerminalSessionLifetimeTests PRIVATE CocoaTerminal::CocoaTerminal)
   add_test(NAME CocoaTerminalSessionLifetimeTests COMMAND CocoaTerminalSessionLifetimeTests)
+
+  add_executable(CocoaTerminalSessionShellTests tests/COTSessionShellTests.mm)
+  set_target_properties(CocoaTerminalSessionShellTests PROPERTIES LINKER_LANGUAGE OBJCXX)
+  target_link_libraries(CocoaTerminalSessionShellTests PRIVATE CocoaTerminal::CocoaTerminal)
+  add_test(NAME CocoaTerminalSessionShellTests COMMAND CocoaTerminalSessionShellTests)
 
   add_executable(CocoaTerminalAttributeTests tests/COTTerminalAttributeTests.mm)
   set_target_properties(CocoaTerminalAttributeTests PROPERTIES LINKER_LANGUAGE OBJCXX)

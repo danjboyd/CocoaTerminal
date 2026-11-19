@@ -183,10 +183,11 @@ static NSColor *COTColorFromHexString(NSString *hex) {
   }
   NSMutableDictionary *result = [NSMutableDictionary dictionary];
   NSString *currentSection = @"";
-  NSArray *lines = [content componentsSeparatedByString:@"\n"];
+  // Any line ending: a Windows editor writes CRLF.
+  NSArray *lines = [content componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
   for (NSString *rawLine in lines) {
     NSString *line = COTStripComment(rawLine);
-    line = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    line = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if ([line length] == 0) {
       continue;
     }

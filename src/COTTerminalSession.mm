@@ -10,12 +10,19 @@
 
 #import <dispatch/dispatch.h>
 
+#if defined(_WIN32)
+#include "COTConPTY.h"
+#include <string>
+#include <utility>
+#include <vector>
+#else
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #if defined(__APPLE__) || defined(__linux__) || defined(__FreeBSD__)
 #include <pty.h>
@@ -52,6 +59,54 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     nil];
 }
 
+#if defined(_WIN32) && defined(GNUSTEP)
+// GNUstep base for Windows (MSYS2's, at least) is built without libdispatch, so its run loop never drains the main
+// dispatch queue, and nothing this session sends the main thread (screen updates, title, exit) would arrive. On Linux
+// base watches libdispatch's main-queue descriptor; here we watch its event handle the same way.
+extern "C" void *_dispatch_get_main_queue_handle_4CF(void);
+extern "C" void _dispatch_main_queue_callback_4CF(void *message);
+
+@interface COTMainQueueWatcher : NSObject <RunLoopEvents>
++ (void)install;
+@end
+
+@implementation COTMainQueueWatcher
+
+- (void)receivedEvent:(void *)data type:(RunLoopEventType)type extra:(void *)extra forMode:(NSString *)mode {
+  (void)data;
+  (void)type;
+  (void)extra;
+  (void)mode;
+  _dispatch_main_queue_callback_4CF(NULL);
+}
+
++ (void)install {
+  static BOOL installed = NO;
+  if (installed) {
+    return;
+  }
+  if (![NSThread isMainThread]) {
+    [self performSelectorOnMainThread:@selector(install) withObject:nil waitUntilDone:NO];
+    return;
+  }
+  installed = YES;
+  void *handle = _dispatch_get_main_queue_handle_4CF();
+  if (handle == NULL) {
+    return;
+  }
+  COTMainQueueWatcher *watcher = [[COTMainQueueWatcher alloc] init];  // lives as long as the process
+  NSRunLoop *loop = [NSRunLoop mainRunLoop];
+  NSArray *modes = [NSArray arrayWithObjects:NSDefaultRunLoopMode, @"NSEventTrackingRunLoopMode",
+                                             @"NSModalPanelRunLoopMode", nil];
+  for (NSString *mode in modes) {
+    [loop addEvent:handle type:ET_HANDLE watcher:watcher forMode:mode];
+  }
+  _dispatch_main_queue_callback_4CF(NULL);  // anything queued before now
+}
+
+@end
+#endif
+
 // What main-thread callbacks hold instead of the session. The session clears it at the start of -dealloc (on the main
 // thread), so a callback queued while the session was being freed finds nil and does nothing.
 @interface COTSessionHandle : NSObject {
@@ -66,8 +121,13 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   COTSessionHandle *_handle;
   COTTerminalConfiguration *_configuration;
   cot::TerminalGrid *_grid;
+#if defined(_WIN32)
+  cot::ConPTYProcess *_conpty;
+  int _windowsExitCode;
+#else
   int _masterFd;
   pid_t _childPid;
+#endif
   BOOL _running;
   NSUInteger _columns;
   NSUInteger _rows;
@@ -183,6 +243,9 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 - (instancetype)initWithConfiguration:(COTTerminalConfiguration *)configuration {
   self = [super init];
   if (self) {
+#if defined(_WIN32) && defined(GNUSTEP)
+    [COTMainQueueWatcher install];
+#endif
     _configuration = [configuration copy];
     _columns = 80;
     _rows = 24;
@@ -204,8 +267,13 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     _grid->setClipboardReadCallback([unsafeSelf]() -> std::string {
       return [unsafeSelf readClipboardForRemote];
     });
+#if defined(_WIN32)
+    _conpty = NULL;
+    _windowsExitCode = 0;
+#else
     _masterFd = -1;
     _childPid = -1;
+#endif
     _running = NO;
     _terminalQueue = dispatch_queue_create("org.cocoaterminal.session", DISPATCH_QUEUE_SERIAL);
     _snapshotLock = [[NSLock alloc] init];
@@ -267,7 +335,11 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 }
 
 - (void)writeReplyBytes:(const char *)bytes length:(std::size_t)length {
-#if !defined(_WIN32)
+#if defined(_WIN32)
+  if (_conpty != NULL && length > 0) {
+    _conpty->write(bytes, length);
+  }
+#else
   if (_masterFd >= 0 && length > 0) {
     ssize_t total = 0;
     while (total < (ssize_t)length) {
@@ -320,21 +392,29 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   if (text == nil) {
     text = @"";
   }
+  NSString *previous = _lastClipboardWrite;
   _lastClipboardWrite = [text copy];
+  [previous release];
   _clipboardWriteCount += 1;
-  NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
-  @try {
-    [pasteboard declareTypes:[NSArray arrayWithObject:NSStringPboardType] owner:nil];
-    [pasteboard setString:text forType:NSStringPboardType];
-  } @catch (NSException *exception) {
-    // Pasteboard server may be unavailable on headless GNUstep; the write
-    // is still observable via lastClipboardWrite.
-    (void)exception;
-  }
-  NSDictionary *userInfo = [NSDictionary dictionaryWithObject:text forKey:@"text"];
-  [[NSNotificationCenter defaultCenter] postNotificationName:@"COTTerminalSessionClipboardDidWriteNotification"
-                                                      object:self
-                                                    userInfo:userInfo];
+  // The pasteboard on the main thread, as AppKit wants: here on the terminal queue, GNUstep's Win32 pasteboard blocked
+  // the queue, and the screen stopped updating.
+  NSString *ownedText = [text copy];
+  [self deliverOnMain:^(COTTerminalSession *session) {
+    NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+    @try {
+      [pasteboard declareTypes:[NSArray arrayWithObject:NSStringPboardType] owner:nil];
+      [pasteboard setString:ownedText forType:NSStringPboardType];
+    } @catch (NSException *exception) {
+      // Pasteboard server may be unavailable on headless GNUstep; the write
+      // is still observable via lastClipboardWrite.
+      (void)exception;
+    }
+    NSDictionary *userInfo = [NSDictionary dictionaryWithObject:ownedText forKey:@"text"];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"COTTerminalSessionClipboardDidWriteNotification"
+                                                        object:session
+                                                      userInfo:userInfo];
+  }];
+  [ownedText release];
 }
 
 - (std::string)readClipboardForRemote {
@@ -366,6 +446,10 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   dispatch_sync(_terminalQueue, ^{
     delete _grid;
     _grid = NULL;
+#if defined(_WIN32)
+    delete _conpty;
+    _conpty = NULL;
+#endif
   });
   [_configuration release];
   [_snapshotLock release];
@@ -381,12 +465,81 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   }
 
 #if defined(_WIN32)
-  if (error != NULL) {
-    *error = [NSError errorWithDomain:COTTerminalErrorDomain
-                                 code:2
-                             userInfo:@{NSLocalizedDescriptionKey: @"Windows ConPTY support is planned but not implemented yet."}];
+  std::vector<std::string> argv;
+  for (NSString *argument in _configuration.shellCommand) {
+    argv.push_back([argument UTF8String] ?: "");
   }
-  return NO;
+  if (argv.empty() || argv[0].empty()) {
+    argv.assign(1, "powershell.exe");
+  }
+  std::vector<std::pair<std::string, std::string>> environment;
+  NSDictionary<NSString *, NSString *> *configured = _configuration.environment;
+  for (NSString *key in configured) {
+    NSString *value = [configured objectForKey:key];
+    if ([key length] > 0 && value != nil) {
+      environment.emplace_back([key UTF8String], [value UTF8String] ?: "");
+    }
+  }
+  if ([_configuration.terminalType length] > 0) {
+    environment.emplace_back("TERM", [[_configuration terminalType] UTF8String]);
+  }
+  environment.emplace_back("COLORTERM", "truecolor");
+  std::string workingDirectory;
+  if ([_configuration.workingDirectory length] > 0) {
+    workingDirectory = [_configuration.workingDirectory UTF8String] ?: "";
+  }
+
+  // The reader thread's callbacks hold no reference to the session. -dealloc ends the process (joining that thread)
+  // before it frees anything, and drains the terminal queue before the grid goes.
+  void *rawSelf = self;
+  COTSessionHandle *handle = _handle;
+  dispatch_queue_t terminalQueue = _terminalQueue;
+  cot::ConPTYProcess::Callbacks callbacks;
+  callbacks.output = [rawSelf, terminalQueue](const char *bytes, std::size_t length) {
+    @autoreleasepool {
+      NSData *data = [[NSData alloc] initWithBytes:bytes length:(NSUInteger)length];
+      dispatch_async(terminalQueue, ^{
+        [(COTTerminalSession *)rawSelf ingestOwnedData:data];
+      });
+      [data release];  // the block keeps its own
+    }
+  };
+  callbacks.exited = [handle](std::uint32_t exitCode) {
+    @autoreleasepool {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        COTTerminalSession *session = handle->session;
+        if (session != nil) {
+          [session deliverChildExitWithStatus:(int)exitCode];
+        }
+      });
+    }
+  };
+
+  if (_conpty != NULL) {
+    dispatch_sync(_terminalQueue, ^{
+      delete _conpty;
+      _conpty = NULL;
+    });
+  }
+  std::string message;
+  std::unique_ptr<cot::ConPTYProcess> process = cot::ConPTYProcess::spawn(
+    argv, environment, workingDirectory, (unsigned)_columns, (unsigned)_rows, std::move(callbacks), &message);
+  if (!process) {
+    if (error != NULL) {
+      *error = [NSError errorWithDomain:COTTerminalErrorDomain
+                                   code:1
+                               userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithUTF8String:message.c_str()] ?: @"ConPTY failed"}];
+    }
+    return NO;
+  }
+  cot::ConPTYProcess *started = process.release();
+  dispatch_sync(_terminalQueue, ^{
+    _conpty = started;
+  });
+  _running = YES;
+  _exitDelivered = NO;
+  _windowsExitCode = 0;
+  return YES;
 #else
   struct winsize size;
   size.ws_col = (unsigned short)_columns;
@@ -469,6 +622,35 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
   }
 }
 
+// On the terminal queue: output the reader thread read.
+- (void)ingestOwnedData:(NSData *)data {
+  if (_grid == NULL) {
+    return;
+  }
+  [self recordPerfReadWithByteCount:[data length]];
+  [self recordPerfIngest];
+  _grid->ingest((const char *)[data bytes], (std::size_t)[data length]);
+  [self publishSnapshotAndNotify:YES];
+}
+
+#if defined(_WIN32)
+// On the main thread, after the last of the shell's output was queued (the reader thread sends this once it's read it).
+- (void)deliverChildExitWithStatus:(int)status {
+  _windowsExitCode = status;
+  // Behind the queued output, so the host sees the final screen before the exit.
+  COTSessionHandle *handle = [_handle retain];
+  dispatch_async(_terminalQueue, ^{
+    dispatch_async(dispatch_get_main_queue(), ^{
+      COTTerminalSession *session = handle->session;
+      if (session != nil) {
+        [session deliverChildExit];
+      }
+      [handle release];
+    });
+  });
+}
+#endif
+
 - (void)deliverChildExit {
   if (_exitDelivered) {
     return;
@@ -480,10 +662,17 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
                                                   object:_readHandle];
   }
   int status = 0;
+#if defined(_WIN32)
+  status = _windowsExitCode;
+  if (_conpty != NULL) {
+    _conpty->terminate();  // the threads have finished; this joins them and closes the handles
+  }
+#else
   if (_childPid > 0) {
     waitpid(_childPid, &status, 0);
     _childPid = -1;
   }
+#endif
   _running = NO;
   if ([_delegate respondsToSelector:@selector(terminalSession:didExitWithStatus:)]) {
     [_delegate terminalSession:self didExitWithStatus:status];
@@ -498,6 +687,11 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     [_readHandle release];
     _readHandle = nil;
   }
+#if defined(_WIN32)
+  if (_conpty != NULL) {
+    _conpty->terminate();  // deleted in -dealloc or the next start, on the terminal queue
+  }
+#else
   if (_childPid > 0) {
     kill(_childPid, SIGHUP);
     int status = 0;
@@ -508,9 +702,11 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
     close(_masterFd);
     _masterFd = -1;
   }
+#endif
   _running = NO;
 }
 
+// On Windows a thread reads the console and delivers on its own, so there's nothing to poll.
 - (void)poll {
 #if !defined(_WIN32)
   if (_masterFd < 0) {
@@ -595,7 +791,11 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
       }
       _grid->resize(resizeColumns, resizeRows);
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+      if (_conpty != NULL) {
+        _conpty->resize((unsigned)resizeColumns, (unsigned)resizeRows);
+      }
+#else
       if (_masterFd >= 0) {
         struct winsize size;
         size.ws_col = (unsigned short)resizeColumns;
@@ -618,18 +818,20 @@ static NSDictionary *COTDictionaryFromColor(const cot::TerminalColor &color) {
 }
 
 - (void)sendInput:(NSData *)data {
-#if !defined(_WIN32)
-  if (_masterFd >= 0 && [data length] > 0) {
-    (void)write(_masterFd, [data bytes], [data length]);
-    if ([self viewportOffset] > 0) {
-      [self performGridMutation:^{
-        _grid->scrollToBottom();
-      } notify:YES];
-    }
-  }
+#if defined(_WIN32)
+  BOOL wrote = _conpty != NULL && _running && [data length] > 0 &&
+               _conpty->write((const char *)[data bytes], (std::size_t)[data length]);
 #else
-  (void)data;
+  BOOL wrote = _masterFd >= 0 && [data length] > 0;
+  if (wrote) {
+    (void)write(_masterFd, [data bytes], [data length]);
+  }
 #endif
+  if (wrote && [self viewportOffset] > 0) {
+    [self performGridMutation:^{
+      _grid->scrollToBottom();
+    } notify:YES];
+  }
 }
 
 - (NSArray<NSString *> *)visibleLines {

@@ -1,6 +1,7 @@
 .codex-local.md
 
 /build/
+/build-*/
 /cmake-build-*/
 /DerivedData/
 /.cache/

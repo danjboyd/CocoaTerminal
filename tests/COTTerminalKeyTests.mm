@@ -5,13 +5,17 @@
 // matched: "|" and "\" (X 51) sent Backspace, and Ctrl+Q / Ctrl+R / Ctrl+Y (X 24, 27, 29) zoomed instead of reaching the
 // shell. Each key goes to a terminal running `dd` in raw mode, with its X11 keycode on a US layout, and the bytes the
 // pty got are compared. Needs a display (run it under Xvfb); skips, passing, without one. Not on macOS, whose keyCodes
-// are its own.
+// are its own. On Windows the same keys go through ConPTY to MSYS2's sh (skipped without it).
+//
+// Also F1-F12 and Shift+Tab, which sent GNUstep's private-use function-key characters and a plain Tab.
 
 #import <CocoaTerminal/CocoaTerminal.h>
 
 #include <cstdlib>
 #include <iostream>
+#if !defined(_WIN32)
 #include <unistd.h>
+#endif
 
 static void expect(BOOL condition, const char *message) {
   if (!condition) {
@@ -31,17 +35,30 @@ int main() {
   std::cout << "skipped: macOS keyCodes are its own\n";
   return 0;
 #endif
+#if defined(_WIN32)
+  NSString *shell = @"C:\\msys64\\usr\\bin\\sh.exe";
+  if (![[NSFileManager defaultManager] fileExistsAtPath:shell]) {
+    std::cout << "skipped: no MSYS2 sh\n";
+    return 0;
+  }
+  NSString *out = [[NSTemporaryDirectory() stringByAppendingPathComponent:
+                    [NSString stringWithFormat:@"cot-key-test-%d.bin", (int)[[NSProcessInfo processInfo] processIdentifier]]]
+                    stringByReplacingOccurrencesOfString:@"\\" withString:@"/"];
+  [[NSFileManager defaultManager] removeItemAtPath:out error:NULL];
+#else
   if (getenv("DISPLAY") == NULL) {
     std::cout << "skipped: no DISPLAY\n";
     return 0;
   }
-  [NSApplication sharedApplication];
+  NSString *shell = @"/bin/sh";
   char path[] = "/tmp/cot-key-test-XXXXXX";
   int fd = mkstemp(path);
   close(fd);
   NSString *out = [NSString stringWithUTF8String:path];
+#endif
+  [NSApplication sharedApplication];
   COTTerminalConfiguration *configuration = [COTTerminalConfiguration defaultConfiguration];
-  [configuration setShellCommand:[NSArray arrayWithObjects:@"/bin/sh", @"-c",
+  [configuration setShellCommand:[NSArray arrayWithObjects:shell, @"-c",
                                   [NSString stringWithFormat:@"stty raw -echo; exec dd bs=1 of='%@' 2>/dev/null", out], nil]];
   NSRect frame = NSMakeRect(0, 0, 400, 200);
   NSWindow *window = [[NSWindow alloc] initWithContentRect:frame styleMask:NSBorderlessWindowMask backing:NSBackingStoreBuffered defer:NO];
@@ -58,18 +75,23 @@ int main() {
     Key(@"a", @"a", 38, 0), Key(@"|", @"|", 51, shift), Key(@"b", @"b", 56, 0), Key(@"\\", @"\\", 51, 0),
     Key(@"c", @"c", 54, 0), Key(@"~", @"~", 49, shift), Key(@"d", @"d", 40, 0), Key(@"`", @"`", 49, 0), Key(@"e", @"e", 26, 0),
     Key(@"!", @"!", 10, shift), Key(@"@", @"@", 11, shift), Key(@"{", @"{", 34, shift), Key(@"}", @"}", 35, shift),
-    Key(@"\x12", @"r", 27, ctrl), Key(@"\x11", @"q", 24, ctrl), Key(@"\x19", @"y", 29, ctrl), nil];
+    Key(@"\x12", @"r", 27, ctrl), Key(@"\x11", @"q", 24, ctrl), Key(@"\x19", @"y", 29, ctrl),
+    // X11 keycodes 67, 71, 96: F1, F5, F12; 23: Tab.
+    Key([NSString stringWithFormat:@"%C", (unichar)NSF1FunctionKey], [NSString stringWithFormat:@"%C", (unichar)NSF1FunctionKey], 67, NSFunctionKeyMask),
+    Key([NSString stringWithFormat:@"%C", (unichar)NSF5FunctionKey], [NSString stringWithFormat:@"%C", (unichar)NSF5FunctionKey], 71, NSFunctionKeyMask),
+    Key([NSString stringWithFormat:@"%C", (unichar)NSF12FunctionKey], [NSString stringWithFormat:@"%C", (unichar)NSF12FunctionKey], 96, NSFunctionKeyMask),
+    Key(@"\t", @"\t", 23, shift), Key(@"\t", @"\t", 23, 0), nil];
   for (NSEvent *event in keys) [view keyDown:event];
   [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:1.0]];
 
   NSData *got = [NSData dataWithContentsOfFile:out];
-  NSData *want = [@"a|b\\c~d`e!@{}\x12\x11\x19" dataUsingEncoding:NSUTF8StringEncoding];
+  NSData *want = [@"a|b\\c~d`e!@{}\x12\x11\x19\033OP\033[15~\033[24~\033[Z\t" dataUsingEncoding:NSUTF8StringEncoding];
   std::cout << "pty got " << [got length] << " bytes: " << [[[[NSString alloc] initWithData:got encoding:NSUTF8StringEncoding] autorelease] UTF8String] << "\n";
   expect([got isEqualToData:want], "each key's own bytes reach the pty: | and \\ aren't Backspace, Ctrl+R/Q/Y are control bytes");
   expect([[[[view session] configuration] theme] fontSize] == fontSize, "Ctrl+Q / Ctrl+R / Ctrl+Y don't zoom");
 
   [[view session] terminate];
-  unlink(path);
+  [[NSFileManager defaultManager] removeItemAtPath:out error:NULL];
   [pool release];
   std::cout << "COTTerminalKeyTests passed\n";
   return 0;

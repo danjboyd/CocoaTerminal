@@ -143,6 +143,42 @@ int main() {
     [recorder release];
   }
 
+  // 4. An OSC 52 query gets the pasteboard's text, read on the main thread and answered later. (Skipped where the
+  //    pasteboard isn't available, as on headless GNUstep, and on Windows: ConPTY forwards OSC 52 writes but drops
+  //    queries, so none reaches the terminal.)
+#if !defined(_WIN32)
+  {
+    NSString *bash = @"/bin/bash";
+    NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+    BOOL havePasteboard = NO;
+    @try {
+      [pasteboard declareTypes:[NSArray arrayWithObject:NSStringPboardType] owner:nil];
+      havePasteboard = [pasteboard setString:@"COT_CLIP_42" forType:NSStringPboardType] &&
+                       [[pasteboard stringForType:NSStringPboardType] isEqualToString:@"COT_CLIP_42"];
+    } @catch (NSException *exception) {
+      (void)exception;
+    }
+    if (havePasteboard && [[NSFileManager defaultManager] fileExistsAtPath:bash]) {
+      NSString *script = @"stty raw -echo; printf '\\033]52;c;?\\007'; IFS= read -r -d $'\\a' reply; stty sane; "
+                          "printf 'CLIP=%s\\r\\n' \"$(printf '%s' \"${reply##*;}\" | base64 -d)\"; sleep 0.3";
+      COTTerminalSession *session = [[COTTerminalSession alloc]
+        initWithConfiguration:configurationWithCommand([NSArray arrayWithObjects:bash, @"-c", script, nil])];
+      NSError *error = nil;
+      expect([session startWithError:&error], "the clipboard query shell should start");
+      BOOL answered = runUntil(10.0, ^BOOL {
+        [session poll];
+        return linesContain(session, @"CLIP=COT_CLIP_42");
+      });
+      if (!answered) dumpLines(session);
+      expect(answered, "an OSC 52 query should get the pasteboard's text");
+      [session terminate];
+      [session release];
+    } else {
+      std::cout << "skipped OSC 52 query: no pasteboard or bash\n";
+    }
+  }
+#endif
+
   // 3. A command that doesn't exist.
   {
 #if defined(_WIN32)

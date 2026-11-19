@@ -69,7 +69,9 @@ public:
   using TitleCallback = std::function<void(const std::string&)>;
   using BellCallback = std::function<void()>;
   using ClipboardWriteCallback = std::function<void(const std::string&)>;
-  using ClipboardReadCallback = std::function<std::string()>;
+  // A program asked for the clipboard (OSC 52 query). Answer with answerClipboardQuery, on the grid's thread, whenever
+  // the text is in hand: reading a pasteboard can need another thread.
+  using ClipboardQueryCallback = std::function<void(int mask)>;
 
   TerminalGrid(std::size_t columns, std::size_t rows);
   ~TerminalGrid();
@@ -82,7 +84,8 @@ public:
   void setTitleCallback(TitleCallback callback);
   void setBellCallback(BellCallback callback);
   void setClipboardWriteCallback(ClipboardWriteCallback callback);
-  void setClipboardReadCallback(ClipboardReadCallback callback);
+  void setClipboardQueryCallback(ClipboardQueryCallback callback);
+  void answerClipboardQuery(int mask, const std::string& value);
 
   void resize(std::size_t columns, std::size_t rows);
   void ingest(const char* bytes, std::size_t length);
@@ -192,7 +195,7 @@ private:
   TitleCallback titleCallback_;
   BellCallback bellCallback_;
   ClipboardWriteCallback clipboardWriteCallback_;
-  ClipboardReadCallback clipboardReadCallback_;
+  ClipboardQueryCallback clipboardQueryCallback_;
   std::string clipboardAccumulator_;
   std::vector<char> clipboardBuffer_;
 

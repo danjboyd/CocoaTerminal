@@ -264,8 +264,8 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
     _grid->setClipboardWriteCallback([unsafeSelf](const std::string &data) {
       [unsafeSelf deliverClipboardWrite:data];
     });
-    _grid->setClipboardReadCallback([unsafeSelf]() -> std::string {
-      return [unsafeSelf readClipboardForRemote];
+    _grid->setClipboardQueryCallback([unsafeSelf](int mask) {
+      [unsafeSelf answerClipboardQueryWithMask:mask];
     });
 #if defined(_WIN32)
     _conpty = NULL;
@@ -415,6 +415,35 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
                                                       userInfo:userInfo];
   }];
   [ownedText release];
+}
+
+// On the terminal queue, inside an OSC 52 query: read the pasteboard on the main thread, as AppKit wants (GNUstep's
+// Win32 pasteboard blocked the terminal queue when read from it), then answer back on the terminal queue. The answer
+// follows whatever output arrived meanwhile, as any terminal's reply may.
+- (void)answerClipboardQueryWithMask:(int)mask {
+  COTSessionHandle *handle = [_handle retain];
+  dispatch_queue_t terminalQueue = _terminalQueue;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    COTTerminalSession *session = handle->session;
+    if (session == nil) {
+      [handle release];
+      return;
+    }
+    std::string value = [session readClipboardForRemote];
+    dispatch_async(terminalQueue, ^{
+      COTTerminalSession *current = handle->session;
+      if (current != nil) {
+        [current answerClipboardQueryOnTerminalQueue:mask value:value];
+      }
+      [handle release];
+    });
+  });
+}
+
+- (void)answerClipboardQueryOnTerminalQueue:(int)mask value:(const std::string &)value {
+  if (_grid != NULL) {
+    _grid->answerClipboardQuery(mask, value);
+  }
 }
 
 - (std::string)readClipboardForRemote {
@@ -668,6 +697,23 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
     _conpty->terminate();  // the threads have finished; this joins them and closes the handles
   }
 #else
+  // The shell's last output before its exit: what's still in the pty, then everything queued for the grid. -poll found
+  // the exit right after queuing that output, and the delegate heard of it before the screen showed it.
+  if (_masterFd >= 0) {
+    char buffer[8192];
+    for (;;) {
+      ssize_t count = read(_masterFd, buffer, sizeof(buffer));
+      if (count <= 0) {
+        break;
+      }
+      NSData *ownedData = [[NSData alloc] initWithBytes:buffer length:(NSUInteger)count];
+      [self performGridMutation:^{
+        _grid->ingest((const char *)[ownedData bytes], (std::size_t)[ownedData length]);
+        [ownedData release];
+      } notify:YES];
+    }
+  }
+  dispatch_sync(_terminalQueue, ^{});
   if (_childPid > 0) {
     waitpid(_childPid, &status, 0);
     _childPid = -1;

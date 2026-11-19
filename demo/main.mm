@@ -632,6 +632,9 @@ static NSString *COTPythonScenarioScript(NSString *body) {
 
   BOOL timedOut = [[NSDate date] compare:_scenarioDeadline] == NSOrderedDescending;
   if ((_sawScenarioSentinel || timedOut) && !_captured) {
+    // The screen can change between the action check above and the sentinel check (on Windows output arrives from a
+    // thread): an action waiting on a line that came with the sentinel gets its turn now.
+    [self runSyntheticScenarioActionsIfNeeded];
     _captured = YES;
     if (_sawScenarioSentinel) {
       [[_terminalView session] terminate];

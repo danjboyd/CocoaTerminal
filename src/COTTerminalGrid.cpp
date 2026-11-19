@@ -186,8 +186,8 @@ void TerminalGrid::setClipboardWriteCallback(ClipboardWriteCallback callback) {
   clipboardWriteCallback_ = std::move(callback);
 }
 
-void TerminalGrid::setClipboardReadCallback(ClipboardReadCallback callback) {
-  clipboardReadCallback_ = std::move(callback);
+void TerminalGrid::setClipboardQueryCallback(ClipboardQueryCallback callback) {
+  clipboardQueryCallback_ = std::move(callback);
 }
 
 void TerminalGrid::resize(std::size_t columns, std::size_t rows) {
@@ -881,10 +881,14 @@ int TerminalGrid::onSelectionSet(int /*mask*/, const void* fragmentPtr) {
 }
 
 int TerminalGrid::onSelectionQuery(int maskRaw) {
-  if (!clipboardReadCallback_) {
+  if (!clipboardQueryCallback_) {
     return 0;
   }
-  std::string value = clipboardReadCallback_();
+  clipboardQueryCallback_(maskRaw);
+  return 1;
+}
+
+void TerminalGrid::answerClipboardQuery(int maskRaw, const std::string& value) {
   VTermStringFragment frag;
   std::memset(&frag, 0, sizeof(frag));
   frag.str = value.data();
@@ -893,7 +897,6 @@ int TerminalGrid::onSelectionQuery(int maskRaw) {
   frag.final = true;
   VTermState* state = vterm_obtain_state(static_cast<VTerm*>(vt_));
   vterm_state_send_selection(state, static_cast<VTermSelectionMask>(maskRaw), frag);
-  return 1;
 }
 
 } // namespace cot

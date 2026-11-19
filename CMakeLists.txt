@@ -46,7 +46,8 @@ target_include_directories(CocoaTerminal
 target_compile_features(CocoaTerminal PUBLIC cxx_std_17)
 
 target_include_directories(CocoaTerminal PRIVATE ${VTERM_INCLUDE_DIRS})
-target_link_directories(CocoaTerminal PRIVATE ${VTERM_LIBRARY_DIRS})
+# PUBLIC: -lvterm reaches whatever links the static library, which needs its directory too.
+target_link_directories(CocoaTerminal PUBLIC ${VTERM_LIBRARY_DIRS})
 target_link_libraries(CocoaTerminal PRIVATE ${VTERM_LIBRARIES})
 
 if(APPLE)

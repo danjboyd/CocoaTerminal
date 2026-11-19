@@ -190,5 +190,18 @@ int main() {
          "38;2;2;2;2: F is rgb(2,2,2), not dim");
   expect(dimCells[6].text == "G" && dimCells[6].attributes.dim, "a split ESC [ 2 m still dims G");
 
+  // OSC 52 query: the grid asks and returns at once (the host may need another thread for the pasteboard); the reply
+  // goes out when the host answers.
+  cot::TerminalGrid clipGrid(20, 2);
+  std::string clipReply;
+  int queriedMask = -1;
+  clipGrid.setOutputCallback([&](const char *bytes, std::size_t length) { clipReply.append(bytes, length); });
+  clipGrid.setClipboardQueryCallback([&](int mask) { queriedMask = mask; });
+  clipGrid.ingest("\033]52;c;?\a", 9);
+  expect(queriedMask >= 0, "an OSC 52 query reaches the host");
+  expect(clipReply.empty(), "nothing is sent before the host answers");
+  clipGrid.answerClipboardQuery(queriedMask, "HELLO");
+  expect(clipReply.find("52;c;SEVMTE8=") != std::string::npos, "the answer is the text in base64: " + clipReply);
+
   return 0;
 }

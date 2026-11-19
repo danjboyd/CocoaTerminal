@@ -72,6 +72,50 @@ static NSString *COTSequenceForFunctionKey(unichar key) {
   }
 }
 
+// A cell's text as GNUstep can draw it. Composed (NFC): its simple layout gives a combining mark an advance of its own,
+// so e + U+0301 drew as "e´" and pushed the rest of the line a cell right. Without variation selectors (U+FE0E, U+FE0F),
+// which draw as "?": they choose the presentation, which -fallbackFontFor: honours.
+// (By character: GNUstep's -rangeOfString: raises "Invalid location" when the string sought is a selector.)
+static BOOL COTContainsCharacter(NSString *text, unichar c) {
+  NSUInteger length = [text length];
+  for (NSUInteger i = 0; i < length; ++i) {
+    if ([text characterAtIndex:i] == c) return YES;
+  }
+  return NO;
+}
+
+static NSString *COTDrawableCellText(NSString *text) {
+  NSString *composed = [text precomposedStringWithCanonicalMapping] ?: text;
+  if (!COTContainsCharacter(composed, 0xFE0E) && !COTContainsCharacter(composed, 0xFE0F)) {
+    return composed;
+  }
+  NSMutableString *stripped = [NSMutableString stringWithCapacity:[composed length]];
+  NSUInteger length = [composed length];
+  for (NSUInteger i = 0; i < length; ++i) {
+    unichar c = [composed characterAtIndex:i];
+    if (c != 0xFE0E && c != 0xFE0F) [stripped appendFormat:@"%C", c];
+  }
+  return stripped;
+}
+
+// Characters Unicode draws as emoji by default (Emoji_Presentation=Yes) in the BMP. Everything from U+1F000 on that
+// reaches the fallback is treated as emoji too. Symbols outside this list (✳ ✶ ●, Claude Code's spinner) stay text.
+static BOOL COTIsDefaultEmoji(UTF32Char c) {
+  static const UTF32Char ranges[][2] = {
+    {0x231A, 0x231B}, {0x23E9, 0x23EC}, {0x23F0, 0x23F0}, {0x23F3, 0x23F3}, {0x25FD, 0x25FE}, {0x2614, 0x2615},
+    {0x2648, 0x2653}, {0x267F, 0x267F}, {0x2693, 0x2693}, {0x26A1, 0x26A1}, {0x26AA, 0x26AB}, {0x26BD, 0x26BE},
+    {0x26C4, 0x26C5}, {0x26CE, 0x26CE}, {0x26D4, 0x26D4}, {0x26EA, 0x26EA}, {0x26F2, 0x26F3}, {0x26F5, 0x26F5},
+    {0x26FA, 0x26FA}, {0x26FD, 0x26FD}, {0x2705, 0x2705}, {0x270A, 0x270B}, {0x2728, 0x2728}, {0x274C, 0x274C},
+    {0x274E, 0x274E}, {0x2753, 0x2755}, {0x2757, 0x2757}, {0x2795, 0x2797}, {0x27B0, 0x27B0}, {0x27BF, 0x27BF},
+    {0x2B1B, 0x2B1C}, {0x2B50, 0x2B50}, {0x2B55, 0x2B55},
+  };
+  if (c >= 0x1F000) return YES;
+  for (const auto &range : ranges) {
+    if (c >= range[0] && c <= range[1]) return YES;
+  }
+  return NO;
+}
+
 // Shift+Tab, however the backend reports it: Tab with Shift, or the back-tab character as the key itself (not as the
 // control character Ctrl+Y also makes, whose key is "y").
 static BOOL COTIsBackTab(NSEvent *event) {
@@ -184,7 +228,8 @@ static void *dlsym(void *module, const char *name) { return (void *)GetProcAddre
 // A font for a character the terminal's font hasn't got (Claude Code's spinner, ✢ ✳ ✶ ✻ ✽ ● ⏺): fontconfig's choice,
 // as Alacritty's, by PostScript name (the names GNUstep's fonts go by). fontconfig is looked up at run time (GNUstep's
 // backend has it loaded), so nothing new is linked; without it, nil, and the character draws as before.
-static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
+// With color, a colour font (an emoji font) rather than one like the terminal's.
+static NSString *COTFallbackFontName(UTF32Char character, NSString *family, BOOL color) {
   static void *library;
   static BOOL tried;
   if (!tried) {
@@ -197,14 +242,22 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
   COT_FC(FcPatternCreate); COT_FC(FcPatternDestroy); COT_FC(FcPatternAddString); COT_FC(FcPatternAddCharSet);
   COT_FC(FcCharSetCreate); COT_FC(FcCharSetDestroy); COT_FC(FcCharSetAddChar); COT_FC(FcCharSetHasChar);
   COT_FC(FcConfigSubstitute); COT_FC(FcDefaultSubstitute); COT_FC(FcFontMatch); COT_FC(FcPatternGetString);
-  COT_FC(FcPatternGetCharSet);
+  COT_FC(FcPatternGetCharSet); COT_FC(FcPatternAddBool);
 #undef COT_FC
   if (!pFcPatternCreate || !pFcPatternDestroy || !pFcPatternAddString || !pFcPatternAddCharSet || !pFcCharSetCreate ||
       !pFcCharSetDestroy || !pFcCharSetAddChar || !pFcCharSetHasChar || !pFcConfigSubstitute || !pFcDefaultSubstitute ||
-      !pFcFontMatch || !pFcPatternGetString || !pFcPatternGetCharSet)
+      !pFcFontMatch || !pFcPatternGetString || !pFcPatternGetCharSet || !pFcPatternAddBool)
     return nil;
   FcPattern *pattern = pFcPatternCreate();
-  if (family.length) pFcPatternAddString(pattern, FC_FAMILY, (const FcChar8 *)[family UTF8String]);
+  if (color) {
+#ifdef FC_COLOR
+    pFcPatternAddBool(pattern, FC_COLOR, FcTrue);
+#else
+    pFcPatternAddBool(pattern, "color", FcTrue);
+#endif
+  } else if (family.length) {
+    pFcPatternAddString(pattern, FC_FAMILY, (const FcChar8 *)[family UTF8String]);
+  }
   FcCharSet *wanted = pFcCharSetCreate();
   pFcCharSetAddChar(wanted, character);
   pFcPatternAddCharSet(pattern, FC_CHARSET, wanted);
@@ -467,6 +520,7 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
     NSMutableAttributedString *line = [[NSMutableAttributedString alloc] init];
     CGFloat lineStartX = x;
     std::string runText;
+    bool runHasNonASCII = false;
     NSDictionary *runAttributes = nil;
     auto flushRun = [&]() {
       if (runText.empty()) {
@@ -477,6 +531,10 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
                                                encoding:NSUTF8StringEncoding] autorelease];
       if (text == nil) {
         text = @" ";
+      }
+      if (runHasNonASCII) {
+        text = COTDrawableCellText(text);
+        runHasNonASCII = false;
       }
       NSAttributedString *piece = [[NSAttributedString alloc] initWithString:text attributes:runAttributes ?: _textAttributes];
       [line appendAttributedString:piece];
@@ -562,8 +620,9 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
         line = [[NSMutableAttributedString alloc] init];
         runAttributes = nil;
         NSDictionary *glyphAttrs = [NSDictionary dictionaryWithObjectsAndKeys:fallback, NSFontAttributeName, foreground, NSForegroundColorAttributeName, nil];
-        NSSize size = [cellString sizeWithAttributes:glyphAttrs];
-        [cellString drawAtPoint:NSMakePoint(x + MAX(0, (cellRectWidth - size.width) / 2), y + MAX(0, (lineHeight - size.height) / 2))
+        NSString *drawable = COTDrawableCellText(cellString);
+        NSSize size = [drawable sizeWithAttributes:glyphAttrs];
+        [drawable drawAtPoint:NSMakePoint(x + MAX(0, (cellRectWidth - size.width) / 2), y + MAX(0, (lineHeight - size.height) / 2))
                  withAttributes:glyphAttrs];
         lineStartX = x + cellRectWidth;
       } else {
@@ -575,6 +634,7 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
         }
         runAttributes = attrs;
         runText += hidden ? std::string((std::size_t)cellWidthCells, ' ') : cell.text;
+        if (!hidden && !cell.text.empty() && cell.text.size() > 1) runHasNonASCII = true;
       }
 
       if (cell.attributes.underline) {
@@ -1230,18 +1290,20 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family) {
   unichar low = text.length > 1 ? [text characterAtIndex:1] : 0;
   if (character >= 0xD800 && character <= 0xDBFF && low >= 0xDC00 && low <= 0xDFFF)
     character = 0x10000 + ((character - 0xD800) << 10) + (low - 0xDC00);
+  // As emoji: by default, or asked for with U+FE0F. Then a colour font even when the terminal's font has a plain glyph.
+  BOOL emoji = (COTContainsCharacter(text, 0xFE0F) || COTIsDefaultEmoji(character)) && !COTContainsCharacter(text, 0xFE0E);
   NSCharacterSet *covered = [font coveredCharacterSet];
-  if (!covered || [covered longCharacterIsMember:character]) return nil;
-  NSString *key = [NSString stringWithFormat:@"%u %@ %.1f", (unsigned)character, [font fontName], [font pointSize]];
+  if (!emoji && (!covered || [covered longCharacterIsMember:character])) return nil;
+  NSString *key = [NSString stringWithFormat:@"%u %@ %.1f %d", (unsigned)character, [font fontName], [font pointSize], (int)emoji];
   if (!_fallbackFonts) _fallbackFonts = [[NSMutableDictionary alloc] init];
   id cached = [_fallbackFonts objectForKey:key];
   if (cached) return cached == [NSNull null] ? nil : cached;
   NSFont *fallback = nil;
-  NSString *name = COTFallbackFontName(character, [font familyName]);
+  NSString *name = COTFallbackFontName(character, [font familyName], emoji);
   if (name) fallback = [NSFont fontWithName:name size:[font pointSize]];
   if (fallback) {
     // Fit the cell: no wider than it, no taller than the line.
-    CGFloat width = [text sizeWithAttributes:[NSDictionary dictionaryWithObject:fallback forKey:NSFontAttributeName]].width;
+    CGFloat width = [COTDrawableCellText(text) sizeWithAttributes:[NSDictionary dictionaryWithObject:fallback forKey:NSFontAttributeName]].width;
     CGFloat height = [fallback ascender] - [fallback descender];
     CGFloat scale = MIN(1.0, MIN(width > 0 ? cellWidth / width : 1.0, height > 0 ? lineHeight / height : 1.0));
     if (scale < 0.999) fallback = [NSFont fontWithName:name size:floor([font pointSize] * scale * 10) / 10] ?: fallback;

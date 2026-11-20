@@ -325,6 +325,12 @@ static std::atomic<bool> gLaunched(false);
 @end
 
 @implementation BenchDelegate
+// Each section closes its window; on Linux GNUstep then quit the bench after the first one (exit 0, nothing more run).
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app {
+  (void)app;
+  return NO;
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
   gLaunched.store(true);
   (void)notification;

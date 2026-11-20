@@ -147,6 +147,7 @@ static std::string Log(double megabytes, const std::string &sentinel) {
 @interface Bench : NSObject
 @property (nonatomic) unsigned columns, rows, frames;
 @property (nonatomic) double megabytes, fontSize;
+@property (nonatomic) BOOL cmdProducer;  // throughput: cmd.exe's `type` writes the file, not MSYS2's cat
 @property (nonatomic, copy) NSString *fontFamily;
 @end
 
@@ -240,10 +241,22 @@ static std::string Log(double megabytes, const std::string &sentinel) {
 - (void)throughputWithView:(BOOL)withView {
   const char *name = withView ? "throughput-view" : "throughput-session";
   COTTerminalConfiguration *configuration = [self configuration];
+  std::string sentinel = std::string("BENCH-DONE-") + name;
+  NSString *path = WriteTemp([NSString stringWithFormat:@"cot-bench-%s.txt", name], Log(_megabytes, sentinel));
+  unsigned long long bytes = [[[NSFileManager defaultManager] attributesOfItemAtPath:path error:NULL] fileSize];
+  NSTimeInterval start = 0;
+  if (_cmdProducer) {
+    // MSYS2's programs write to a console through Cygwin's layer, about ten times slower than a native one.
+    NSString *windowsPath = [path stringByReplacingOccurrencesOfString:@"/" withString:@"\\"];
+    NSString *line = [NSString stringWithFormat:@"type %@ & ping -n 900 127.0.0.1 >nul", windowsPath];
+    [configuration setShellCommand:[NSArray arrayWithObjects:@"cmd.exe", @"/d", @"/c", line, nil]];
+    fprintf(stderr, "producer: cmd.exe /d /c %s\n", [line UTF8String]);
+  }
   NSWindow *window = nil;
   COTTerminalView *view = nil;
   COTTerminalSession *session = nil;
   NSError *error = nil;
+  if (_cmdProducer) start = [NSDate timeIntervalSinceReferenceDate];  // cmd starts typing as soon as it runs
   if (withView) {
     NSRect frame = [self frameForConfiguration:configuration];
     window = [[NSWindow alloc] initWithContentRect:frame styleMask:NSBorderlessWindowMask backing:NSBackingStoreBuffered defer:NO];
@@ -264,14 +277,13 @@ static std::string Log(double megabytes, const std::string &sentinel) {
       exit(2);
     }
   }
-  Spin(1.0);
-  std::string sentinel = std::string("BENCH-DONE-") + name;
-  NSString *path = WriteTemp([NSString stringWithFormat:@"cot-bench-%s.txt", name], Log(_megabytes, sentinel));
-  unsigned long long bytes = [[[NSFileManager defaultManager] attributesOfItemAtPath:path error:NULL] fileSize];
+  if (!_cmdProducer) Spin(1.0);
   NSDictionary *before = [view performanceSnapshot];
   NSString *needle = [NSString stringWithUTF8String:sentinel.c_str()];
-  NSTimeInterval start = [NSDate timeIntervalSinceReferenceDate];
-  [self sendPath:path to:session];
+  if (!_cmdProducer) {
+    start = [NSDate timeIntervalSinceReferenceDate];
+    [self sendPath:path to:session];
+  }
   BOOL arrived = SpinUntil(600, ^BOOL { return AnyLineContains(session, needle); });
   NSTimeInterval seconds = [NSDate timeIntervalSinceReferenceDate] - start;
   if (!arrived) {
@@ -346,6 +358,7 @@ int main(int argc, char **argv) {
     else if (flag == "--font") bench.fontFamily = [NSString stringWithUTF8String:value];
     else if (flag == "--size") bench.fontSize = atof(value);
     else if (flag == "--only") only = [NSString stringWithUTF8String:value];
+    else if (flag == "--producer") bench.cmdProducer = std::string(value) == "cmd";
     else {
       fprintf(stderr, "unknown option %s\n", argv[i]);
       return 2;

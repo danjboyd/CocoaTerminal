@@ -6,6 +6,8 @@
 // International layout loaded on this thread, so the window needn't be in front); skips elsewhere.
 //   ' then e  -> é        (a dead key, then a letter)
 //   ' then space -> '     (a dead key on its own)
+//   ' then x -> 'x        (a dead key, then a letter it doesn't combine with)
+//   a        -> a         (a plain key)
 //   AltGr+q  -> ä         (US International's AltGr layer)
 
 #import <CocoaTerminal/CocoaTerminal.h>
@@ -132,6 +134,8 @@ int main() {
   } cases[] = {
       {"' then e gives é", {VK_OEM_7, 'E'}, false, "\xc3\xa9"},
       {"' then space gives '", {VK_OEM_7, VK_SPACE}, false, "'"},
+      {"' then x gives 'x", {VK_OEM_7, 'X'}, false, "'x"},
+      {"a plain key: a", {'A', 0}, false, "a"},
       {"AltGr+q gives ä", {'Q', 0}, true, "\xc3\xa4"},
   };
   COTTerminalSession *session = [view session];

@@ -16,9 +16,12 @@
 #import <AppKit/AppKit.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <thread>
 #include <vector>
 
 static NSString *BenchShell(void) {
@@ -309,6 +312,10 @@ static std::string Log(double megabytes, const std::string &sentinel) {
 
 @end
 
+// Set once the app has finished launching. GNUstep can hang before that (with no services cache it runs make_services,
+// which needs gdnc), and the bench would wait silently: a watchdog says so and exits after 60 s.
+static std::atomic<bool> gLaunched(false);
+
 // Runs once the app has finished launching, as the demo's delegate does: GNUstep on Windows throws if a window is
 // shown before then.
 @interface BenchDelegate : NSObject
@@ -319,6 +326,7 @@ static std::string Log(double megabytes, const std::string &sentinel) {
 
 @implementation BenchDelegate
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
+  gLaunched.store(true);
   (void)notification;
   COTTerminalTheme *theme = [[_bench configuration] theme];
   printf("font %s %.0f pt (%s)\n", [[theme fontFamily] UTF8String], [theme fontSize], [[[theme font] fontName] UTF8String]);
@@ -364,6 +372,15 @@ int main(int argc, char **argv) {
       return 2;
     }
   }
+  std::thread([] {
+    std::this_thread::sleep_for(std::chrono::seconds(60));
+    if (!gLaunched.load()) {
+      fprintf(stderr, "CocoaTerminalBench: the application hadn't finished launching after 60 s (is GNUstep's gdnc "
+                      "running, and its services cache made?): giving up\n");
+      fflush(stderr);
+      std::_Exit(2);
+    }
+  }).detach();
   NSApplication *app = [NSApplication sharedApplication];
   BenchDelegate *delegate = [[BenchDelegate alloc] init];
   delegate.bench = bench;

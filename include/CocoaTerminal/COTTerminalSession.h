@@ -59,6 +59,20 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setViewportOffset:(NSUInteger)offset;
 - (void)adjustViewportOffset:(NSInteger)delta;
 - (void)scrollToBottom;
+/// Every line held: the scrollback (oldest first), then the screen's rows. Lines in -findText: are numbered this way.
+- (NSUInteger)lineCount;
+/// Searches the scrollback and the screen for text. Forward, it finds the first match at or after (line, column);
+/// backward, the last one before it; both wrap round, and a line of -lineCount or more means "from the end". YES with
+/// the match's line, first cell column and width in cells. A match lies within one line; case is ignored for ASCII
+/// letters when ignoreCase is YES.
+- (BOOL)findText:(NSString *)text
+        fromLine:(NSUInteger)line
+          column:(NSUInteger)column
+       backwards:(BOOL)backwards
+      ignoreCase:(BOOL)ignoreCase
+       matchLine:(nullable NSUInteger *)matchLine
+     matchColumn:(nullable NSUInteger *)matchColumn
+      matchWidth:(nullable NSUInteger *)matchWidth;
 - (BOOL)isUsingAlternateScreen;
 - (BOOL)hasUsedAlternateScreen;
 - (BOOL)hasColorSpans;

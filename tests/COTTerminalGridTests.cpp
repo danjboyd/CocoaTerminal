@@ -165,6 +165,60 @@ int main() {
   trimGrid.setScrollbackLimit(50);
   expect(trimGrid.scrollbackLineCount() == 3, "raising the limit keeps what's there");
 
+  // Search over the scrollback and the screen: lines are numbered from the oldest scrollback line.
+  {
+    cot::TerminalGrid findGrid(20, 3);
+    findGrid.setScrollbackLimit(100);
+    const char *text = "alpha one\r\nbeta\r\nAlpha two\r\ngamma\r\n\xe7\x8c\xab alpha\r\nend";
+    findGrid.ingest(text, std::char_traits<char>::length(text));
+    // Lines: 0 "alpha one", 1 "beta", 2 "Alpha two", 3 "gamma", 4 "猫 alpha" (猫 is two cells), 5 "end".
+    expect(findGrid.scrollbackLineCount() == 3 && findGrid.lineCount() == 6, "expected 3 scrollback lines + 3 rows");
+    cot::TerminalGrid::TextMatch m;
+    expect(findGrid.findText("alpha", findGrid.lineCount(), 0, true, false, &m) && m.line == 4 && m.column == 3 &&
+               m.width == 5,
+           "backward from the end finds the newest match, after the wide character");
+    expect(findGrid.findText("alpha", m.line, m.column, true, false, &m) && m.line == 0 && m.column == 0,
+           "case-sensitive: the next one up skips 'Alpha'");
+    expect(findGrid.findText("alpha", m.line, m.column, true, false, &m) && m.line == 4,
+           "backward wraps round from the top to the newest");
+    expect(findGrid.findText("alpha", 0, 1, false, true, &m) && m.line == 2 && m.column == 0,
+           "forward, ignoring case, finds 'Alpha' in the scrollback");
+    expect(findGrid.findText("ALPHA", 4, 4, false, true, &m) && m.line == 0 && m.column == 0,
+           "forward wraps round from the bottom to the top");
+    expect(findGrid.findText("\xe7\x8c\xab", 0, 0, false, false, &m) && m.line == 4 && m.column == 0 && m.width == 2,
+           "a wide character's match covers its two cells");
+    expect(!findGrid.findText("delta", 0, 0, false, true, &m), "no match");
+    expect(!findGrid.findText("", 0, 0, false, true, &m), "an empty search finds nothing");
+    cot::TerminalGrid oneLine(10, 1);
+    oneLine.ingest("ab ab", 5);
+    expect(oneLine.findText("ab", 0, 3, true, false, &m) && m.column == 0, "on one line, backward from column 3");
+    expect(oneLine.findText("ab", 0, 0, true, false, &m) && m.column == 3, "and from its start wraps to the last");
+  }
+
+  // Links: the URL under a cell, without the sentence's punctuation round it.
+  {
+    cot::TerminalGrid linkGrid(60, 3);
+    const char *text = "see (https://x.org/a_(b)/c?q=1). or\r\nmailto:me@x.org, ftp://h/f\r\n\xe7\x8c\xab http://w.example/";
+    linkGrid.ingest(text, std::char_traits<char>::length(text));
+    const auto &rows = linkGrid.visibleCells();
+    std::size_t start = 0, width = 0;
+    expect(cot::urlAtColumn(rows[0], 10, &start, &width) == "https://x.org/a_(b)/c?q=1" && start == 5 && width == 25,
+           "a URL in brackets keeps its own balanced brackets and drops the closing one and the full stop");
+    expect(cot::urlAtColumn(rows[0], 5) == "https://x.org/a_(b)/c?q=1", "its first cell");
+    expect(cot::urlAtColumn(rows[0], 29) == "https://x.org/a_(b)/c?q=1", "its last cell");
+    expect(cot::urlAtColumn(rows[0], 30).empty(), "the bracket after it isn't part of it");
+    expect(cot::urlAtColumn(rows[0], 4).empty(), "nor the one before it");
+    expect(cot::urlAtColumn(rows[0], 1).empty(), "plain words aren't links");
+    expect(cot::urlAtColumn(rows[1], 3) == "mailto:me@x.org", "mailto, without the comma");
+    expect(cot::urlAtColumn(rows[1], 20) == "ftp://h/f", "ftp");
+    expect(cot::urlAtColumn(rows[2], 5, &start, &width) == "http://w.example/" && start == 3 && width == 17,
+           "columns count a wide character before the URL as two cells");
+    expect(cot::urlAtColumn(rows[2], 0).empty(), "the wide character itself isn't a link");
+    cot::TerminalGrid bare(20, 1);
+    bare.ingest("go to https:// now", 18);
+    expect(cot::urlAtColumn(bare.visibleCells()[0], 8).empty(), "a scheme alone isn't a link");
+  }
+
   // SGR 2 (faint) survives libvterm as alternate font 1; 22 ends it; 8 hides; colour sub-parameters pass untouched.
   expect(cot::FaintRewriter::rewriteParameters("2") == "11", "2 -> 11");
   expect(cot::FaintRewriter::rewriteParameters("1;2;31") == "1;11;31", "1;2;31 -> 1;11;31");

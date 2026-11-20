@@ -35,6 +35,25 @@ extern NSString *const COTTerminalExitStatusUserInfoKey;
 - (void)selectAll;
 - (NSDictionary *)performanceSnapshot;
 
+/// Search through the scrollback and the screen. -findPrevious: looks up (towards older output) and -findNext: down;
+/// both wrap round. A new text starts from the end, so -findPrevious: first finds the newest match. The match is
+/// scrolled into view and selected (so -copySelection copies it). NO, with the selection cleared, when there's none.
+- (BOOL)findPrevious:(NSString *)text;
+- (BOOL)findNext:(NSString *)text;
+/// Whether searches match case; NO (the default) ignores it for ASCII letters.
+@property (nonatomic) BOOL findCaseSensitive;
+/// A find field at the top right of the view (Ctrl+Shift+F, or Cmd+Shift+F on a Mac). Typing searches as you go;
+/// Enter finds the next older match, Shift+Enter the next newer one, Esc closes it.
+- (void)showFindBar;
+- (void)hideFindBar;
+@property (nonatomic, readonly, getter=isFindBarVisible) BOOL findBarVisible;
+
+/// The link (http, https, ftp, file or mailto URL) shown at a cell of the view, or nil. Ctrl-click (Cmd-click on a
+/// Mac) opens it with -openLink:.
+- (nullable NSURL *)linkAtRow:(NSUInteger)row column:(NSUInteger)column;
+/// Opens a link in the system's browser or mail program. A subclass can override it to open links its own way.
+- (BOOL)openLink:(NSURL *)url;
+
 @end
 
 NS_ASSUME_NONNULL_END

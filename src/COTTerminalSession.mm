@@ -1069,6 +1069,46 @@ struct COTOutputBatch {
   });
 }
 
+- (NSUInteger)lineCount {
+  if (_grid == NULL) {
+    return 0;
+  }
+  __block NSUInteger count = 0;
+  dispatch_sync(_terminalQueue, ^{  // the queue never waits on the main thread (see -setScrollbackLineLimit:)
+    if (_grid != NULL) {
+      count = _grid->lineCount();
+    }
+  });
+  return count;
+}
+
+- (BOOL)findText:(NSString *)text
+        fromLine:(NSUInteger)line
+          column:(NSUInteger)column
+       backwards:(BOOL)backwards
+      ignoreCase:(BOOL)ignoreCase
+       matchLine:(NSUInteger *)matchLine
+     matchColumn:(NSUInteger *)matchColumn
+      matchWidth:(NSUInteger *)matchWidth {
+  if (_grid == NULL || [text length] == 0) {
+    return NO;
+  }
+  std::string needle([text UTF8String] ?: "");
+  __block BOOL found = NO;
+  __block cot::TerminalGrid::TextMatch match;
+  dispatch_sync(_terminalQueue, ^{
+    if (_grid != NULL) {
+      found = _grid->findText(needle, line, column, backwards, ignoreCase, &match);
+    }
+  });
+  if (found) {
+    if (matchLine != NULL) *matchLine = match.line;
+    if (matchColumn != NULL) *matchColumn = match.column;
+    if (matchWidth != NULL) *matchWidth = match.width;
+  }
+  return found;
+}
+
 - (NSUInteger)viewportOffset {
   return [self currentSnapshot]->viewportOffset;
 }

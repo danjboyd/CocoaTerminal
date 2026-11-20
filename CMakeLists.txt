@@ -102,6 +102,8 @@ else()
   endif()
   if(NOT WIN32)
     target_link_libraries(CocoaTerminal PUBLIC util)  # forkpty
+  else()
+    target_link_libraries(CocoaTerminal PUBLIC shell32)  # ShellExecuteW opens links
   endif()
   target_link_libraries(CocoaTerminal PUBLIC dispatch)
 endif()
@@ -186,6 +188,11 @@ if(COCOATERMINAL_BUILD_TESTS)
   set_target_properties(CocoaTerminalViewStyleTests PROPERTIES LINKER_LANGUAGE OBJCXX)
   target_link_libraries(CocoaTerminalViewStyleTests PRIVATE CocoaTerminal::CocoaTerminal)
   add_test(NAME CocoaTerminalViewStyleTests COMMAND CocoaTerminalViewStyleTests)
+
+  add_executable(CocoaTerminalSearchTests tests/COTTerminalSearchTests.mm)
+  set_target_properties(CocoaTerminalSearchTests PROPERTIES LINKER_LANGUAGE OBJCXX)
+  target_link_libraries(CocoaTerminalSearchTests PRIVATE CocoaTerminal::CocoaTerminal)
+  add_test(NAME CocoaTerminalSearchTests COMMAND CocoaTerminalSearchTests)
 
   add_executable(CocoaTerminalCaptureTests tests/COTTerminalCaptureTests.mm)
   set_target_properties(CocoaTerminalCaptureTests PROPERTIES LINKER_LANGUAGE OBJCXX)

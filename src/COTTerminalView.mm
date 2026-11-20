@@ -9,6 +9,10 @@
 
 #include <math.h>
 
+#if defined(_WIN32)
+#include <shellapi.h>  // ShellExecuteW, for links
+#endif
+
 #include <unordered_map>
 
 #include "COTGLRenderer.h"
@@ -192,6 +196,13 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   NSBitmapImageRep *_glImage;
   NSOpenGLView *_glSurface;
   BOOL _glUnavailable;
+  // Search: the find bar (nil while hidden), the text last searched for, and where its match was (a line as
+  // -[COTTerminalSession findText:...] numbers them, NSNotFound before the first match).
+  NSTextField *_findField;
+  NSString *_findText;
+  NSUInteger _findLine;
+  NSUInteger _findColumn;
+  BOOL _findCaseSensitive;
 }
 - (void)drawGLSurface:(NSOpenGLView *)surface;
 @end
@@ -365,6 +376,7 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family, BOOL
     [_session setDelegate:self];
     _baseFontSize = [[configuration theme] fontSize];
     _activeMouseButton = -1;
+    _findLine = NSNotFound;
     _pendingDirtyRows = [[NSMutableIndexSet alloc] init];
     _perfLoggingEnabled = getenv("COCOATERMINAL_PERF_LOG") != NULL;
     _perfLastLogTime = [NSDate timeIntervalSinceReferenceDate];
@@ -386,6 +398,7 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family, BOOL
     [_session setDelegate:self];
     _baseFontSize = [[[_session configuration] theme] fontSize];
     _activeMouseButton = -1;
+    _findLine = NSNotFound;
     _pendingDirtyRows = [[NSMutableIndexSet alloc] init];
     _perfLoggingEnabled = getenv("COCOATERMINAL_PERF_LOG") != NULL;
     _perfLastLogTime = [NSDate timeIntervalSinceReferenceDate];
@@ -421,6 +434,10 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family, BOOL
   [_glSurface release];
   [_glFontKey release];
   [_glImage release];
+  [_findField setDelegate:nil];
+  [_findField setTarget:nil];
+  [_findField release];
+  [_findText release];
   [super dealloc];
 }
 
@@ -470,6 +487,10 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family, BOOL
     }
     if ([base isEqualToString:@"a"]) {
       [self selectAll];
+      return YES;
+    }
+    if ([base isEqualToString:@"f"]) {
+      [self showFindBar];
       return YES;
     }
   }
@@ -629,9 +650,10 @@ static std::uint32_t COTRGB(NSColor *color) {
 
 // Whether to draw straight into the window through an NSOpenGLView: OpenGL wanted and working, GNUstep able to keep
 // the view's child window with it, and an opaque theme (a child window can't show what's behind the window).
+// Not while the find bar shows: the surface's native child window would cover it.
 - (BOOL)wantsGLSurface {
   return !_glUnavailable && [self wantsOpenGL] && COTGLSurfaceUsable() && [self window] != nil &&
-         [[[_session configuration] theme] opacity] >= 1.0;
+         [[[_session configuration] theme] opacity] >= 1.0 && _findField == nil;
 }
 
 - (void)attachGLSurface {
@@ -1260,6 +1282,15 @@ static std::uint32_t COTRGB(NSColor *color) {
 
 - (void)mouseDown:(NSEvent *)event {
   [[self window] makeFirstResponder:self];
+  // Ctrl-click (Cmd-click on a Mac; GNUstep often reports the Ctrl key as Command) opens a link, even in a program
+  // that takes the mouse.
+  if ([event modifierFlags] & (NSCommandKeyMask | NSControlKeyMask)) {
+    NSURL *link = [self linkForEvent:event];
+    if (link != nil) {
+      [self openLink:link];
+      return;
+    }
+  }
   BOOL shift = ([event modifierFlags] & NSShiftKeyMask) != 0;
   BOOL hadSelection = _hasSelection;
   _hasSelection = NO;
@@ -1331,6 +1362,224 @@ static std::uint32_t COTRGB(NSColor *color) {
   if (row > (NSInteger)[_session rows] - 1) row = (NSInteger)[_session rows] - 1;
   if (outRow) *outRow = row;
   if (outColumn) *outColumn = column;
+}
+
+// The URL under the pointer, from the cells on screen.
+- (NSURL *)linkForEvent:(NSEvent *)event {
+  NSInteger row = 0;
+  NSInteger column = 0;
+  [self cellCoordinatesForEvent:event row:&row column:&column];
+  return [self linkAtRow:(NSUInteger)row column:(NSUInteger)column];
+}
+
+- (NSURL *)linkAtRow:(NSUInteger)row column:(NSUInteger)column {
+  COTTerminalSnapshot *snapshot = [_session currentSnapshot];
+  if (snapshot == nil || row >= snapshot->cells.size()) {
+    return nil;
+  }
+  std::string url = cot::urlAtColumn(snapshot->cells[row], column);
+  if (url.empty()) {
+    return nil;
+  }
+  NSString *string = [NSString stringWithUTF8String:url.c_str()];
+  NSURL *link = string != nil ? [NSURL URLWithString:string] : nil;
+  if (link == nil && string != nil) {  // non-ASCII characters: percent-encode them
+    NSString *escaped = [string stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+    link = escaped != nil ? [NSURL URLWithString:escaped] : nil;
+  }
+  return link;
+}
+
+- (BOOL)openLink:(NSURL *)url {
+  if (url == nil) {
+    return NO;
+  }
+#if defined(_WIN32)
+  // GNUstep's NSWorkspace on Windows has no handler for web links: let the shell open it.
+  NSString *string = [url absoluteString];
+  std::wstring wide;
+  for (NSUInteger i = 0; i < [string length]; i++) {
+    wide.push_back((wchar_t)[string characterAtIndex:i]);
+  }
+  HINSTANCE result = ShellExecuteW(NULL, L"open", wide.c_str(), NULL, NULL, SW_SHOWNORMAL);
+  return (INT_PTR)result > 32;
+#else
+  if ([[NSWorkspace sharedWorkspace] openURL:url]) {
+    return YES;
+  }
+#if !defined(__APPLE__)
+  // GNUstep's NSWorkspace knows no browser unless one is set up: hand it to the desktop's opener.
+  @try {
+    [NSTask launchedTaskWithLaunchPath:@"/usr/bin/xdg-open" arguments:[NSArray arrayWithObject:[url absoluteString]]];
+    return YES;
+  } @catch (NSException *exception) {
+    (void)exception;
+  }
+#endif
+  return NO;
+#endif
+}
+
+#pragma mark - Search
+
+- (BOOL)findPrevious:(NSString *)text {
+  return [self findText:text backwards:YES];
+}
+
+- (BOOL)findNext:(NSString *)text {
+  return [self findText:text backwards:NO];
+}
+
+- (BOOL)findCaseSensitive {
+  return _findCaseSensitive;
+}
+
+- (void)setFindCaseSensitive:(BOOL)caseSensitive {
+  if (_findCaseSensitive != caseSensitive) {
+    _findCaseSensitive = caseSensitive;
+    _findLine = NSNotFound;
+  }
+}
+
+- (BOOL)findText:(NSString *)text backwards:(BOOL)backwards {
+  if ([text length] == 0) {
+    _findLine = NSNotFound;
+    return NO;
+  }
+  // The same text (in any case, when case is ignored) carries on from the last match; a new one starts again.
+  BOOL same = _findText != nil && (_findCaseSensitive ? [text isEqualToString:_findText]
+                                                      : [text caseInsensitiveCompare:_findText] == NSOrderedSame);
+  if (!same) {
+    [_findText release];
+    _findText = [text copy];
+    _findLine = NSNotFound;
+  }
+  // A new search starts from the end: upward it finds the newest match, downward the oldest.
+  NSUInteger fromLine = NSUIntegerMax;
+  NSUInteger fromColumn = 0;
+  if (_findLine != NSNotFound) {
+    fromLine = _findLine;
+    fromColumn = backwards ? _findColumn : _findColumn + 1;
+  }
+  NSUInteger line = 0, column = 0, width = 0;
+  if (![_session findText:text fromLine:fromLine column:fromColumn backwards:backwards ignoreCase:!_findCaseSensitive
+                matchLine:&line matchColumn:&column matchWidth:&width]) {
+    _findLine = NSNotFound;
+    [self clearSelection];
+    return NO;
+  }
+  _findLine = line;
+  _findColumn = column;
+  [self revealLine:line column:column width:width];
+  return YES;
+}
+
+// Scrolls a line into view (the middle of it, if it was out of sight) and selects the cells of the match.
+- (void)revealLine:(NSUInteger)line column:(NSUInteger)column width:(NSUInteger)width {
+  NSInteger rows = (NSInteger)[_session rows];
+  NSInteger lineCount = (NSInteger)[_session lineCount];  // after any earlier scroll: the queue runs in order
+  NSInteger scrollback = MAX((NSInteger)0, lineCount - rows);
+  NSInteger offset = (NSInteger)[_session viewportOffset];
+  NSInteger top = scrollback - offset;  // the line in the view's first row
+  if ((NSInteger)line < top || (NSInteger)line >= top + rows) {
+    offset = MIN(scrollback, MAX((NSInteger)0, scrollback - (NSInteger)line + rows / 2));
+    [_session setViewportOffset:(NSUInteger)offset];
+    (void)[_session lineCount];  // waits for the terminal queue: the scrolled screen is published when this returns
+    top = scrollback - offset;
+  }
+  NSInteger row = (NSInteger)line - top;
+  _selectingLocally = NO;
+  _selectionAnchorRow = row;
+  _selectionAnchorColumn = (NSInteger)column;
+  _selectionCurrentRow = row;
+  _selectionCurrentColumn = (NSInteger)(column + MAX(width, (NSUInteger)1));
+  _hasSelection = YES;
+  [self setNeedsDisplay:YES];
+}
+
+#pragma mark - Find bar
+
+- (BOOL)isFindBarVisible {
+  return _findField != nil;
+}
+
+- (void)showFindBar {
+  if (_findField == nil) {
+    _findField = [[NSTextField alloc] initWithFrame:NSZeroRect];
+    [_findField setEditable:YES];
+    [_findField setBezeled:YES];
+    [_findField setTarget:self];
+    [_findField setAction:@selector(findBarAction:)];
+    [_findField setDelegate:(id)self];
+    if ([_findField respondsToSelector:@selector(setPlaceholderString:)]) {
+      [(id)_findField setPlaceholderString:@"Find (Enter: older, Shift+Enter: newer, Esc: close)"];
+    }
+    [_findField setAutoresizingMask:NSViewMinXMargin | NSViewMinYMargin];
+    if ([_findText length] > 0) {
+      [_findField setStringValue:_findText];
+    }
+    [self detachGLSurface];  // its child window would cover the field
+    [self layoutFindBar];
+    [self addSubview:_findField];
+  }
+  // No spell checking in a search field.
+  NSText *editor = [[self window] fieldEditor:YES forObject:_findField];
+  if ([editor respondsToSelector:@selector(setContinuousSpellCheckingEnabled:)]) {
+    [(NSTextView *)editor setContinuousSpellCheckingEnabled:NO];
+  }
+  [[self window] makeFirstResponder:_findField];
+  if ([_findField respondsToSelector:@selector(selectText:)]) {
+    [_findField selectText:nil];
+  }
+}
+
+- (void)hideFindBar {
+  if (_findField == nil) {
+    return;
+  }
+  [_findField setDelegate:nil];
+  [_findField setTarget:nil];
+  [_findField removeFromSuperview];
+  [_findField autorelease];  // it may be the one sending us this
+  _findField = nil;
+  [[self window] makeFirstResponder:self];
+  [self setNeedsDisplay:YES];  // the surface comes back on the next draw
+}
+
+- (void)layoutFindBar {
+  NSRect bounds = [self bounds];
+  CGFloat height = 24;
+  CGFloat width = MIN((CGFloat)320, NSWidth(bounds) - 16);
+  [_findField setFrame:NSMakeRect(NSMaxX(bounds) - width - 8, [self isFlipped] ? 6 : NSMaxY(bounds) - height - 6, width,
+                                  height)];
+}
+
+- (void)findBarAction:(id)sender {
+  (void)sender;
+  BOOL shift = ([[NSApp currentEvent] modifierFlags] & NSShiftKeyMask) != 0;
+  [self showFindResult:[self findText:[_findField stringValue] backwards:!shift]];
+}
+
+- (void)showFindResult:(BOOL)found {
+  [_findField setTextColor:(found || [[_findField stringValue] length] == 0) ? [NSColor textColor] : [NSColor redColor]];
+}
+
+// Each keystroke searches again from the newest output.
+- (void)controlTextDidChange:(NSNotification *)notification {
+  if ([notification object] != _findField) {
+    return;
+  }
+  _findLine = NSNotFound;
+  [self showFindResult:[self findText:[_findField stringValue] backwards:YES]];
+}
+
+- (BOOL)control:(NSControl *)control textView:(NSTextView *)textView doCommandBySelector:(SEL)command {
+  (void)textView;
+  if (control == _findField && (command == @selector(cancelOperation:) || command == @selector(complete:))) {
+    [self hideFindBar];
+    return YES;
+  }
+  return NO;
 }
 
 - (void)clearSelection {
@@ -1600,6 +1849,10 @@ static std::uint32_t COTRGB(NSColor *color) {
   }
   if ([chars isEqualToString:@"a"]) {
     [self selectAll];
+    return YES;
+  }
+  if ([chars isEqualToString:@"f"]) {
+    [self showFindBar];
     return YES;
   }
   return NO;

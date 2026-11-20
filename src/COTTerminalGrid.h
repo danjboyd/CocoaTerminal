@@ -63,6 +63,12 @@ private:
   std::string pending_;
 };
 
+// The URL (http, https, ftp, file or mailto) whose text covers the given cell column of a line, or "" if none does.
+// Trailing punctuation (".", ",", ";", ":", "!", "?", quotes) and unbalanced closing brackets aren't part of it, so
+// "(see https://x.org/a)." gives "https://x.org/a". startColumn and width, when given, are its cells.
+std::string urlAtColumn(const std::vector<TerminalCell>& cells, std::size_t column, std::size_t* startColumn = nullptr,
+                        std::size_t* width = nullptr);
+
 class TerminalGrid {
 public:
   using OutputCallback = std::function<void(const char*, std::size_t)>;
@@ -117,6 +123,20 @@ public:
 
   std::vector<std::vector<TerminalCell>> viewportCells() const;
   std::vector<std::string> viewportLines() const;
+
+  // Text search over every line held: lines 0 .. scrollbackLineCount()-1 are the scrollback (oldest first), then the
+  // screen's rows. A match is where the text starts (line and cell column) and how many cells it covers. Searching
+  // forward finds the first match at or after (fromLine, fromColumn); backward, the last one before it. Both wrap
+  // round the whole buffer, and a fromLine past the end means "from the end" (forward then starts at the top). Case is
+  // ignored for ASCII letters when asked. A match lies within one line.
+  struct TextMatch {
+    std::size_t line = 0;
+    std::size_t column = 0;
+    std::size_t width = 0;
+  };
+  std::size_t lineCount() const { return scrollback_.size() + screen_.size(); }
+  bool findText(const std::string& needle, std::size_t fromLine, std::size_t fromColumn, bool backwards,
+                bool ignoreCase, TextMatch* out) const;
 
   bool usingAlternateScreen() const { return usingAlternateScreen_; }
   bool hasUsedAlternateScreen() const { return hasUsedAlternateScreen_; }

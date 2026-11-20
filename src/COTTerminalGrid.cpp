@@ -686,6 +686,171 @@ std::vector<std::string> TerminalGrid::viewportLines() const {
   return result;
 }
 
+namespace {
+
+// A line's text, with where each cell's text starts in it (offsets) and that cell's column; both end with a sentinel
+// for the end of the line.
+void lineText(const std::vector<TerminalCell>& cells, std::string& text, std::vector<std::size_t>& offsets,
+              std::vector<std::size_t>& columns) {
+  text.clear();
+  offsets.clear();
+  columns.clear();
+  for (std::size_t i = 0; i < cells.size(); ++i) {
+    if (cells[i].continuation) continue;
+    offsets.push_back(text.size());
+    columns.push_back(i);
+    text += cells[i].text.empty() ? std::string(" ") : cells[i].text;
+  }
+  offsets.push_back(text.size());
+  columns.push_back(cells.size());
+}
+
+// The column of the cell whose text holds byte offset (the cell it starts in).
+std::size_t columnAtOffset(const std::vector<std::size_t>& offsets, const std::vector<std::size_t>& columns,
+                           std::size_t offset) {
+  auto it = std::upper_bound(offsets.begin(), offsets.end(), offset);
+  std::size_t index = it == offsets.begin() ? 0 : (std::size_t)(it - offsets.begin()) - 1;
+  return columns[index];
+}
+
+// Each match of needle in a line of cells, as (column, width in cells). A match has to start on a cell's first byte.
+void matchesInLine(const std::vector<TerminalCell>& cells, const std::string& needle, bool ignoreCase,
+                   std::vector<std::pair<std::size_t, std::size_t>>& out) {
+  out.clear();
+  std::string text;
+  std::vector<std::size_t> offsets;
+  std::vector<std::size_t> columns;
+  lineText(cells, text, offsets, columns);
+  if (ignoreCase) {
+    for (char& c : text) {
+      if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+    }
+  }
+  for (std::size_t pos = text.find(needle); pos != std::string::npos; pos = text.find(needle, pos + 1)) {
+    auto start = std::lower_bound(offsets.begin(), offsets.end(), pos);
+    if (start == offsets.end() || *start != pos) continue;
+    auto end = std::lower_bound(offsets.begin(), offsets.end(), pos + needle.size());
+    std::size_t first = columns[(std::size_t)(start - offsets.begin())];
+    std::size_t last = columns[(std::size_t)(end - offsets.begin())];
+    out.emplace_back(first, last > first ? last - first : 1);
+  }
+}
+
+bool isURLByte(unsigned char c) {
+  if (c >= 0x80) return true;  // part of a non-ASCII character (an IRI)
+  if (c <= 0x20 || c == 0x7f) return false;
+  return std::strchr("<>\"'`{}|\\^", c) == nullptr;
+}
+
+}  // namespace
+
+std::string urlAtColumn(const std::vector<TerminalCell>& cells, std::size_t column, std::size_t* startColumn,
+                        std::size_t* width) {
+  if (column >= cells.size()) return std::string();
+  std::string text;
+  std::vector<std::size_t> offsets;
+  std::vector<std::size_t> columns;
+  lineText(cells, text, offsets, columns);
+  // The byte offset of the clicked cell (a wide character's second cell belongs to its first).
+  auto cell = std::upper_bound(columns.begin(), columns.end(), column);
+  std::size_t index = cell == columns.begin() ? 0 : (std::size_t)(cell - columns.begin()) - 1;
+  std::size_t at = offsets[index];
+  if (at >= text.size() || !isURLByte((unsigned char)text[at])) return std::string();
+  std::size_t left = at;
+  while (left > 0 && isURLByte((unsigned char)text[left - 1])) --left;
+  std::size_t right = at;
+  while (right < text.size() && isURLByte((unsigned char)text[right])) ++right;
+  std::string token = text.substr(left, right - left);
+  // The last scheme that starts at or before the click.
+  static const char* const schemes[] = {"https://", "http://", "ftp://", "file://", "mailto:"};
+  std::size_t best = std::string::npos;
+  for (const char* scheme : schemes) {
+    for (std::size_t pos = token.find(scheme); pos != std::string::npos && left + pos <= at;
+         pos = token.find(scheme, pos + 1)) {
+      if (best == std::string::npos || pos > best) best = pos;
+    }
+  }
+  if (best == std::string::npos) return std::string();
+  std::string url = token.substr(best);
+  // Trailing punctuation, and closing brackets with no opening one in the URL, belong to the sentence.
+  while (!url.empty()) {
+    char last = url.back();
+    if (std::strchr(".,;:!?", last) != nullptr) {
+      url.pop_back();
+      continue;
+    }
+    const char* closers = ")]";
+    const char* openers = "([";
+    const char* found = std::strchr(closers, last);
+    if (found != nullptr) {
+      char open = openers[found - closers];
+      if (std::count(url.begin(), url.end(), open) < std::count(url.begin(), url.end(), last)) {
+        url.pop_back();
+        continue;
+      }
+    }
+    break;
+  }
+  std::size_t schemeLength = url.find(':') + 1;
+  if (url.size() <= schemeLength || (url.compare(0, 6, "mailto") != 0 && url.size() <= schemeLength + 2)) {
+    return std::string();  // just the scheme
+  }
+  std::size_t begin = left + best;
+  std::size_t end = begin + url.size();
+  if (at >= end) return std::string();  // the click was on the trailing punctuation
+  std::size_t firstColumn = columnAtOffset(offsets, columns, begin);
+  std::size_t endColumn = columnAtOffset(offsets, columns, end - 1);
+  std::size_t lastWidth = (std::size_t)std::max(1, cells[endColumn].width);
+  if (startColumn != nullptr) *startColumn = firstColumn;
+  if (width != nullptr) *width = endColumn + lastWidth - firstColumn;
+  return url;
+}
+
+bool TerminalGrid::findText(const std::string& needle, std::size_t fromLine, std::size_t fromColumn, bool backwards,
+                            bool ignoreCase, TextMatch* out) const {
+  std::size_t count = lineCount();
+  if (needle.empty() || count == 0) return false;
+  std::string pattern = needle;
+  if (ignoreCase) {
+    for (char& c : pattern) {
+      if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+    }
+  }
+  if (fromLine >= count) {
+    fromLine = backwards ? count - 1 : 0;
+    fromColumn = backwards ? SIZE_MAX : 0;
+  }
+  std::vector<std::pair<std::size_t, std::size_t>> hits;
+  // The start line is visited twice: first for the part on the search's side of fromColumn, and last, after
+  // wrapping round, for the rest.
+  for (std::size_t step = 0; step <= count; ++step) {
+    std::size_t line = backwards ? (fromLine + count - step % count) % count : (fromLine + step) % count;
+    const std::vector<TerminalCell>& cells = line < scrollback_.size() ? scrollback_[line] : screen_[line - scrollback_.size()];
+    matchesInLine(cells, pattern, ignoreCase, hits);
+    const std::pair<std::size_t, std::size_t>* chosen = nullptr;
+    for (const auto& hit : hits) {
+      bool allowed = true;
+      if (step == 0) allowed = backwards ? hit.first < fromColumn : hit.first >= fromColumn;
+      else if (step == count) allowed = backwards ? hit.first >= fromColumn : hit.first < fromColumn;
+      if (!allowed) continue;
+      if (!backwards) {
+        chosen = &hit;
+        break;
+      }
+      chosen = &hit;  // hits run left to right: the last allowed one is wanted
+    }
+    if (chosen != nullptr) {
+      if (out != nullptr) {
+        out->line = line;
+        out->column = chosen->first;
+        out->width = chosen->second;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
 int TerminalGrid::onDamage(int startRow, int endRow) {
   for (int row = startRow; row < endRow; ++row) {
     markRowDirty(row);

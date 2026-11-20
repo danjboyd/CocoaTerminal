@@ -510,6 +510,12 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family, BOOL
     return nil;
   }
 
+  // The screen updates at most 30 times a second: output that arrived since the last update (or whose notice is still
+  // on its way to the main thread) hasn't marked the view dirty yet, so -displayIfNeeded would draw nothing new and the
+  // capture (GNUstep reads the window's backing store) would predate it. Apply the update now; with no dirty rows
+  // recorded it redraws the whole view.
+  [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performPendingScreenUpdate) object:nil];
+  [self performPendingScreenUpdate];
   [self displayIfNeeded];
   // Drawn straight into the window, the frame isn't in anything GNUstep can read back: render it once more off screen,
   // in the surface's context, and read that.

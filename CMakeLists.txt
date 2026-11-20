@@ -182,6 +182,11 @@ if(COCOATERMINAL_BUILD_TESTS)
   target_link_libraries(CocoaTerminalViewStyleTests PRIVATE CocoaTerminal::CocoaTerminal)
   add_test(NAME CocoaTerminalViewStyleTests COMMAND CocoaTerminalViewStyleTests)
 
+  add_executable(CocoaTerminalCaptureTests tests/COTTerminalCaptureTests.mm)
+  set_target_properties(CocoaTerminalCaptureTests PROPERTIES LINKER_LANGUAGE OBJCXX)
+  target_link_libraries(CocoaTerminalCaptureTests PRIVATE CocoaTerminal::CocoaTerminal)
+  add_test(NAME CocoaTerminalCaptureTests COMMAND CocoaTerminalCaptureTests)
+
   add_executable(CocoaTerminalKeyTests tests/COTTerminalKeyTests.mm)
   set_target_properties(CocoaTerminalKeyTests PROPERTIES LINKER_LANGUAGE OBJCXX)
   target_link_libraries(CocoaTerminalKeyTests PRIVATE CocoaTerminal::CocoaTerminal)

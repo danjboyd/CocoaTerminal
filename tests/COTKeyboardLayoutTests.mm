@@ -21,6 +21,7 @@
 #include <imm.h>
 #endif
 
+#if defined(_WIN32)  // the helpers, used only on Windows
 static int failures = 0;
 static void check(BOOL condition, const char *message) {
   if (!condition) {
@@ -28,6 +29,7 @@ static void check(BOOL condition, const char *message) {
     failures++;
   }
 }
+#endif
 
 // The view, recording the text it sends the terminal: what -keyDown: gets as characters, or -insertText: as text.
 @interface RecordingView : COTTerminalView {
@@ -47,6 +49,7 @@ static void check(BOOL condition, const char *message) {
 }
 @end
 
+#if defined(_WIN32)
 static void Spin(NSTimeInterval seconds) {
   [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:seconds]];
 }
@@ -65,7 +68,6 @@ static NSString *PromptLine(COTTerminalSession *session) {
   return [typed substringToIndex:end];
 }
 
-#if defined(_WIN32)
 // The key events GNUstep made from the messages, handed straight to the view: a test run in the background has no
 // key window for NSApp to send them to.
 static void Deliver(NSView *view) {

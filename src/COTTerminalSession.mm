@@ -133,6 +133,7 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
   NSUInteger _rows;
   NSFileHandle *_readHandle;
   BOOL _exitDelivered;
+  BOOL _outputPublishPending;  // terminal queue only
   NSString *_lastClipboardWrite;
   NSUInteger _clipboardWriteCount;
   dispatch_queue_t _terminalQueue;
@@ -230,13 +231,46 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
   }];
 }
 
+// On the terminal queue, after output was parsed: one snapshot for all the output queued behind it, not one per read.
+// ConPTY delivers output a line at a time (about 90 bytes), and copying the whole screen for each was half the time
+// spent on heavy output. The publish goes behind whatever is queued now, so a burst of reads ends in one snapshot.
+- (void)publishAfterQueuedOutput {
+  if (_outputPublishPending) {
+    return;
+  }
+  _outputPublishPending = YES;
+  COTSessionHandle *handle = [_handle retain];
+  dispatch_async(_terminalQueue, ^{
+    @autoreleasepool {
+      COTTerminalSession *session = handle->session;  // nil once -dealloc has begun; then the grid may be gone
+      if (session != nil) {
+        [session flushPendingOutputPublish];
+      }
+      [handle release];
+    }
+  });
+}
+
+// On the terminal queue: the snapshot output is waiting for, now. The exit paths call this so the host sees the final
+// screen before the exit.
+- (void)flushPendingOutputPublish {
+  if (_outputPublishPending && _grid != NULL) {
+    _outputPublishPending = NO;
+    [self publishSnapshotAndNotify:YES];
+  }
+}
+
 - (void)performGridMutation:(dispatch_block_t)block notify:(BOOL)notify {
   dispatch_async(_terminalQueue, ^{
-    if (_grid == NULL) {
-      return;
+    // GNUstep's libdispatch doesn't drain an autorelease pool around each block, as Apple's does, so without this
+    // every update's snapshot (a copy of the whole screen) stayed alive: gigabytes under heavy output.
+    @autoreleasepool {
+      if (_grid == NULL) {
+        return;
+      }
+      block();
+      [self publishSnapshotAndNotify:notify];
     }
-    block();
-    [self publishSnapshotAndNotify:notify];
   });
 }
 
@@ -528,7 +562,9 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
     @autoreleasepool {
       NSData *data = [[NSData alloc] initWithBytes:bytes length:(NSUInteger)length];
       dispatch_async(terminalQueue, ^{
-        [(COTTerminalSession *)rawSelf ingestOwnedData:data];
+        @autoreleasepool {  // see -performGridMutation:notify:
+          [(COTTerminalSession *)rawSelf ingestOwnedData:data];
+        }
       });
       [data release];  // the block keeps its own
     }
@@ -641,11 +677,16 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
   }
   [self recordPerfReadWithByteCount:[data length]];
   NSData *ownedData = [data copy];
-  [self performGridMutation:^{
-    [self recordPerfIngest];
-    _grid->ingest((const char *)[ownedData bytes], (std::size_t)[ownedData length]);
-    [ownedData release];
-  } notify:YES];
+  dispatch_async(_terminalQueue, ^{
+    @autoreleasepool {
+      if (_grid != NULL) {
+        [self recordPerfIngest];
+        _grid->ingest((const char *)[ownedData bytes], (std::size_t)[ownedData length]);
+        [self publishAfterQueuedOutput];
+      }
+      [ownedData release];
+    }
+  });
   if (_readHandle != nil) {
     [_readHandle readInBackgroundAndNotify];
   }
@@ -659,7 +700,7 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
   [self recordPerfReadWithByteCount:[data length]];
   [self recordPerfIngest];
   _grid->ingest((const char *)[data bytes], (std::size_t)[data length]);
-  [self publishSnapshotAndNotify:YES];
+  [self publishAfterQueuedOutput];
 }
 
 #if defined(_WIN32)
@@ -669,6 +710,12 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
   // Behind the queued output, so the host sees the final screen before the exit.
   COTSessionHandle *handle = [_handle retain];
   dispatch_async(_terminalQueue, ^{
+    @autoreleasepool {
+      COTTerminalSession *queued = handle->session;
+      if (queued != nil) {
+        [queued flushPendingOutputPublish];  // the last output's snapshot goes first
+      }
+    }
     dispatch_async(dispatch_get_main_queue(), ^{
       COTTerminalSession *session = handle->session;
       if (session != nil) {
@@ -713,7 +760,11 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
       } notify:YES];
     }
   }
-  dispatch_sync(_terminalQueue, ^{});
+  dispatch_sync(_terminalQueue, ^{
+    @autoreleasepool {
+      [self flushPendingOutputPublish];
+    }
+  });
   if (_childPid > 0) {
     waitpid(_childPid, &status, 0);
     _childPid = -1;

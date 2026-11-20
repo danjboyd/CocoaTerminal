@@ -16,32 +16,56 @@ namespace cot {
 
 namespace {
 
+// The process's EGL display, initialised once and never terminated. EGL hands every caller the same display for a
+// platform, and eglInitialize isn't counted: one context's eglTerminate invalidated every other view's context, which
+// then couldn't be made current and fell back to Cairo (several terminals in one window, one of them closed).
+struct SharedDisplay {
+  EGLDisplay display = EGL_NO_DISPLAY;
+  std::string platform = "EGL";
+};
+
+const SharedDisplay &TheDisplay() {
+  static const SharedDisplay shared = [] {
+    SharedDisplay result;
+#ifdef EGL_PLATFORM_SURFACELESS_MESA
+    auto getPlatformDisplay = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
+    if (getPlatformDisplay) {
+      result.display = getPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, nullptr);
+      result.platform = "EGL surfaceless";
+    }
+#endif
+    if (result.display == EGL_NO_DISPLAY || !eglInitialize(result.display, nullptr, nullptr)) {
+      result.display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+      result.platform = "EGL";
+      if (result.display == EGL_NO_DISPLAY || !eglInitialize(result.display, nullptr, nullptr)) {
+        result.display = EGL_NO_DISPLAY;
+      }
+    }
+    return result;
+  }();
+  return shared;
+}
+
 class EGLGLContext : public GLContext {
 public:
   ~EGLGLContext() override {
     if (_display != EGL_NO_DISPLAY) {
-      eglMakeCurrent(_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+      if (eglGetCurrentContext() == _context) {
+        eglMakeCurrent(_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+      }
       if (_context != EGL_NO_CONTEXT) eglDestroyContext(_display, _context);
       if (_surface != EGL_NO_SURFACE) eglDestroySurface(_display, _surface);
-      eglTerminate(_display);
+      // Not eglTerminate: the display is the process's, and other views' contexts live on it.
     }
   }
 
   bool setUp(std::string *error) {
-#ifdef EGL_PLATFORM_SURFACELESS_MESA
-    auto getPlatformDisplay = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
-    if (getPlatformDisplay) {
-      _display = getPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, nullptr);
-      _platform = "EGL surfaceless";
-    }
-#endif
-    if (_display == EGL_NO_DISPLAY || !eglInitialize(_display, nullptr, nullptr)) {
-      _display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-      _platform = "EGL";
-      if (_display == EGL_NO_DISPLAY || !eglInitialize(_display, nullptr, nullptr)) {
-        *error = "no EGL display";
-        return false;
-      }
+    const SharedDisplay &shared = TheDisplay();
+    _display = shared.display;
+    _platform = shared.platform;
+    if (_display == EGL_NO_DISPLAY) {
+      *error = "no EGL display";
+      return false;
     }
     if (!eglBindAPI(EGL_OPENGL_API)) {
       *error = "EGL has no desktop OpenGL";

@@ -8,6 +8,7 @@
 
 #include "../src/COTGLRenderer.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -136,6 +137,19 @@ int main() {
     std::printf("note: no emoji font drew the rocket\n");
   } else {
     expect(coloured > 10, "the rocket should be in colour (" + std::to_string(coloured) + " coloured pixels)");
+  }
+
+  // Several views each have a renderer; one going (a terminal closed) mustn't break the others. On Linux every renderer's
+  // EGL context lived on the one process-wide display, which the first to go terminated.
+  {
+    std::string secondError;
+    auto second = cot::GLRenderer::create(family, 17.0f, cot::GLRenderer::Antialiasing::Grayscale, &secondError);
+    expect(second != nullptr, "a second renderer: " + secondError);
+    second.reset();
+    std::fill(image.rgba.begin(), image.rgba.end(), 0);
+    bool again = renderer->render(frame, image.rgba.data(), &error);
+    expect(again, "the first renderer still renders after another is destroyed: " + error);
+    expect(again && image.at(1, 1) == 0x101010, "and draws the frame, got " + Hex(image.at(1, 1)));
   }
 
   if (failures == 0) std::printf("CocoaTerminalGLRendererTests passed\n");

@@ -49,7 +49,8 @@ Differences from Linux worth knowing:
   draws with OpenGL instead of Cairo (experimental); `COCOATERMINAL_RENDERER=gl` or `=cairo` overrides it. It needs OpenGL 3.3 with framebuffer
   objects; without that (Windows' own software OpenGL is 1.1) the view draws with Cairo and says why on stderr. Glyphs
   come from DirectWrite (ClearType, or `COCOATERMINAL_GL_ANTIALIAS=grayscale`), or FreeType with
-  `COCOATERMINAL_GL_GLYPHS=freetype`; colour emoji included. Box drawing and block elements are drawn as exact
+  `COCOATERMINAL_GL_GLYPHS=freetype`; colour emoji included. Elsewhere glyphs come from FreeType in grayscale, as Cairo
+  draws them (`COCOATERMINAL_GL_ANTIALIAS=cleartype` asks for LCD subpixel glyphs). Box drawing and block elements are drawn as exact
   rectangles so they join. Built on Windows by default (CMake `COCOATERMINAL_GL_RENDERER`); on Linux it's off until
   its EGL context has been tried there, and needs `egl`, `freetype2` and `fontconfig`. To try it on a machine with no
   OpenGL 3.3, put Mesa's `opengl32.dll` (with `libgallium_wgl.dll` and its LLVM) beside the program and set

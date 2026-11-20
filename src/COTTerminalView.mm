@@ -597,8 +597,16 @@ static std::uint32_t COTRGB(NSColor *color) {
   COTTerminalTheme *theme = [[_session configuration] theme];
   NSFont *font = [theme font];
   BOOL opaque = [theme opacity] >= 1.0;
+  // ClearType-style (LCD) glyphs by default only on Windows, which knows the screen's subpixel order and draws its own
+  // text that way. Elsewhere Cairo draws grayscale, and the order is often unknown (Xvfb, Wayland, rotated screens), so
+  // LCD glyphs would show colour fringes: grayscale unless COCOATERMINAL_GL_ANTIALIAS=cleartype (or lcd) asks for it.
   const char *antialias = getenv("COCOATERMINAL_GL_ANTIALIAS");
-  BOOL clearType = opaque && !(antialias != NULL && strcmp(antialias, "grayscale") == 0);
+#if defined(_WIN32)
+  BOOL wantClearType = !(antialias != NULL && strcmp(antialias, "grayscale") == 0);
+#else
+  BOOL wantClearType = antialias != NULL && (strcmp(antialias, "cleartype") == 0 || strcmp(antialias, "lcd") == 0);
+#endif
+  BOOL clearType = opaque && wantClearType;
   NSString *fontKey = [NSString stringWithFormat:@"%@|%.2f|%d", [theme fontFamily], [font pointSize], clearType];
   if (_glRenderer != NULL && [fontKey isEqualToString:_glFontKey] && _glRendererContext == context) {
     return YES;

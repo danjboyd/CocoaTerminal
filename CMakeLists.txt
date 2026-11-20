@@ -94,6 +94,11 @@ if(COCOATERMINAL_BUILD_DEMO)
   add_executable(CocoaTerminalBench bench/COTBench.mm bench/COTBenchMemory.cpp)
   if(WIN32)
     target_link_libraries(CocoaTerminalBench PRIVATE psapi)
+
+    # Do OpenGL views work in GNUstep windows on Windows? Opens windows and reads the screen; not run by ctest.
+    add_executable(CocoaTerminalGLCheck bench/COTGLCheck.mm bench/COTGLCheckWin.cpp)
+    set_target_properties(CocoaTerminalGLCheck PROPERTIES LINKER_LANGUAGE OBJCXX)
+    target_link_libraries(CocoaTerminalGLCheck PRIVATE CocoaTerminal::CocoaTerminal opengl32 psapi gdi32 user32)
   endif()
   set_target_properties(CocoaTerminalBench PROPERTIES LINKER_LANGUAGE OBJCXX)
   target_link_libraries(CocoaTerminalBench PRIVATE CocoaTerminal::CocoaTerminal)

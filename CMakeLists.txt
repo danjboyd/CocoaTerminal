@@ -90,6 +90,10 @@ if(COCOATERMINAL_BUILD_DEMO)
   add_executable(CocoaTerminalDemo demo/main.mm demo/COTConfigLoader.mm)
   set_target_properties(CocoaTerminalDemo PROPERTIES LINKER_LANGUAGE OBJCXX)
   target_link_libraries(CocoaTerminalDemo PRIVATE CocoaTerminal::CocoaTerminal)
+
+  add_executable(CocoaTerminalBench bench/COTBench.mm)
+  set_target_properties(CocoaTerminalBench PROPERTIES LINKER_LANGUAGE OBJCXX)
+  target_link_libraries(CocoaTerminalBench PRIVATE CocoaTerminal::CocoaTerminal)
 endif()
 
 if(COCOATERMINAL_BUILD_TESTS)

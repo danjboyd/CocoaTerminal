@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (C) 2026 Daniel Boyd
 //
-// A theme's fontFamily takes any installed family by its family name, the way other terminals' configs do, not only
-// the ones whose PostScript name happens to be the same ("Courier New" is CourierNewPSMT). Needs a display; skips,
-// passing, without one.
+// A theme's fontFamily takes any installed monospaced family by its family name, the way other terminals' configs do,
+// not only the ones whose PostScript name happens to be the same ("Courier New" is CourierNewPSMT). Needs a display;
+// skips, passing, without one.
 
 #import <CocoaTerminal/CocoaTerminal.h>
 #import <AppKit/AppKit.h>
@@ -29,16 +29,13 @@ int main() {
   [NSApplication sharedApplication];
   NSFontManager *manager = [NSFontManager sharedFontManager];
 
-  // Every fixed-pitch family installed, and any family with a space in its name (where the names most often differ).
+  // Every monospaced family installed: those are what a terminal theme names.
   NSMutableSet *families = [NSMutableSet set];
   for (NSString *name in [manager availableFontNamesWithTraits:NSFixedPitchFontMask]) {
     NSString *family = [[NSFont fontWithName:name size:12] familyName];
     if (family != nil) [families addObject:family];
   }
-  for (NSString *family in [manager availableFontFamilies]) {
-    if ([family rangeOfString:@" "].location != NSNotFound) [families addObject:family];
-  }
-  expect([families count] > 0, @"no installed families to try");
+  expect([families count] > 0, @"no installed monospaced families to try");
 
   NSUInteger tried = 0;
   for (NSString *family in [[families allObjects] sortedArrayUsingSelector:@selector(compare:)]) {

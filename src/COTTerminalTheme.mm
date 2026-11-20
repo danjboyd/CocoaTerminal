@@ -40,6 +40,11 @@ static NSFont *COTFontWithFamily(NSString *family, CGFloat size) {
   if (font == nil && [family isEqualToString:@"Intel One Mono"]) {
     font = [NSFont fontWithName:@"IntelOneMono-Regular" size:scaled];
   }
+  if (font == nil && [family length] > 0) {
+    // fontWithName: wants a face's PostScript name, which matches the family only sometimes ("Consolas", but
+    // "Lucida Console" is LucidaConsole and "Courier New" CourierNewPSMT): ask for the family's regular face.
+    font = [[NSFontManager sharedFontManager] fontWithFamily:family traits:0 weight:5 size:scaled];
+  }
   if (font == nil) {
     font = [NSFont userFixedPitchFontOfSize:scaled];
   }

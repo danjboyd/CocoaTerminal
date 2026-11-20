@@ -37,8 +37,16 @@ Differences from Linux worth knowing:
 - An exit status is the process's exit code, not a `waitpid` status.
 - GNUstep's Windows build doesn't drain the main dispatch queue on its own, so the library hooks it into the main run
   loop when the first session is created.
-- ConPTY forwards a mouse-mode request (`CSI ? 1000 h` and friends) only from a program that reads VT input (tmux, vim,
-  MSYS2's shells, ssh, WSL); from others it's dropped, as they couldn't read the reports.
+- Windows' built-in ConPTY forwards a mouse-mode request (`CSI ? 1000 h` and friends) only from a program that reads
+  VT input (tmux, vim, MSYS2's shells, ssh, WSL); from others it's dropped. It also drops a clipboard query (OSC 52
+  `?`), and an OSC 52 write from PowerShell.
+- Ship Microsoft's own ConPTY beside the program to avoid that: `conpty.dll` and `OpenConsole.exe` from the
+  `Microsoft.Windows.Console.ConPTY` NuGet package (MIT; tested with 1.25.261109001), as Windows Terminal does. When
+  `conpty.dll` sits next to the executable it's used instead of the built-in functions; it passes every sequence
+  through as the program wrote it. `COCOATERMINAL_CONPTY=system` forces the built-in one, or set it to a
+  `conpty.dll`'s full path.
+- MSYS2's own programs (`cat`, `sh`) write to a console slowly (about 0.2 MB/s here, against about 2 MB/s for `type`
+  in `cmd.exe`): that's the Cygwin console layer, whichever ConPTY is used.
 - MSYS2's `gnustep-gui.pc` omits `-lgnustep-gui`; the CMake build adds it.
 
 ## Demo Configuration

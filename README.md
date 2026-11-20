@@ -45,6 +45,13 @@ Differences from Linux worth knowing:
   `conpty.dll` sits next to the executable it's used instead of the built-in functions; it passes every sequence
   through as the program wrote it. `COCOATERMINAL_CONPTY=system` forces the built-in one, or set it to a
   `conpty.dll`'s full path.
+- `COCOATERMINAL_RENDERER=gl` draws with OpenGL instead of Cairo (Windows only, experimental). It needs OpenGL 3.3
+  with framebuffer objects; without that (Windows' own software OpenGL is 1.1) the view draws with Cairo and says why
+  on stderr. Glyphs come from DirectWrite (ClearType, or `COCOATERMINAL_GL_ANTIALIAS=grayscale`), colour emoji
+  included; box drawing and block elements are drawn as exact rectangles so they join. The frame is rendered off
+  screen and drawn as an image: GNUstep's `NSOpenGLView` is a child window on Windows that ignores hiding, clipping and
+  views drawn over it (`bench/COTGLCheck.mm`). `COCOATERMINAL_GL_CONTRAST` and `COCOATERMINAL_GL_GAMMA` tune text
+  weight; `COCOATERMINAL_PERF_LOG=1` prints per-frame timings.
 - MSYS2's own programs (`cat`, `sh`) write to a console slowly (about 0.2 MB/s here, against about 2 MB/s for `type`
   in `cmd.exe`): that's the Cygwin console layer, whichever ConPTY is used.
 - MSYS2's `gnustep-gui.pc` omits `-lgnustep-gui`; the CMake build adds it.

@@ -29,6 +29,7 @@ endif()
 
 add_library(CocoaTerminal
   src/COTConPTY.cpp
+  src/COTGLRendererWin.cpp
   src/COTTerminalConfiguration.mm
   src/COTTerminalGrid.cpp
   src/COTTerminalSession.mm
@@ -73,6 +74,8 @@ else()
   endif()
   if(NOT WIN32)
     target_link_libraries(CocoaTerminal PUBLIC util)  # forkpty
+  else()
+    target_link_libraries(CocoaTerminal PUBLIC opengl32 gdi32 dwrite)  # the OpenGL renderer (COCOATERMINAL_RENDERER=gl)
   endif()
   target_link_libraries(CocoaTerminal PUBLIC dispatch)
 endif()

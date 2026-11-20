@@ -9,6 +9,10 @@
 
 #include <math.h>
 
+#include <unordered_map>
+
+#include "COTGLRenderer.h"
+
 static NSString *const COTTerminalViewErrorDomain = @"COTTerminalViewErrorDomain";
 NSString *const COTTerminalViewDidExitNotification = @"COTTerminalViewDidExitNotification";
 NSString *const COTTerminalExitStatusUserInfoKey = @"status";
@@ -180,6 +184,11 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   NSUInteger _perfDrawCalls;
   NSUInteger _perfDirtyRows;
   NSUInteger _perfFullRedraws;
+  // COCOATERMINAL_RENDERER=gl: the OpenGL renderer, the font it was made for, and the image it draws into.
+  cot::GLRenderer *_glRenderer;
+  NSString *_glFontKey;
+  NSBitmapImageRep *_glImage;
+  BOOL _glUnavailable;
 }
 @end
 
@@ -346,6 +355,9 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family, BOOL
     [_styledFonts[i] release];
   }
   [_fallbackFonts release];
+  delete _glRenderer;
+  [_glFontKey release];
+  [_glImage release];
   [super dealloc];
 }
 
@@ -439,6 +451,9 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family, BOOL
 #if defined(_WIN32)
   // GNUstep's Win32 Cairo backend draws no text into an off-screen cache, so read back what the window shows.
   if ([self window] != nil && [[self window] isVisible] && [self canDraw]) {
+    // The screen updates at most 30 times a second; draw the latest now, or the capture can predate it.
+    [self performPendingScreenUpdate];
+    [self display];
     [self lockFocus];
     NSBitmapImageRep *shown = [[[NSBitmapImageRep alloc] initWithFocusedViewRect:bounds] autorelease];
     [self unlockFocus];
@@ -474,8 +489,183 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family, BOOL
   return data;
 }
 
+// 0xRRGGBB for a colour, with the theme's palette resolved.
+static std::uint32_t COTRGB(NSColor *color) {
+  NSColor *rgb = [color colorUsingColorSpaceName:NSCalibratedRGBColorSpace];
+  if (rgb == nil) return 0;
+  return ((std::uint32_t)lround([rgb redComponent] * 255) << 16) | ((std::uint32_t)lround([rgb greenComponent] * 255) << 8) |
+         (std::uint32_t)lround([rgb blueComponent] * 255);
+}
+
+// COCOATERMINAL_RENDERER=gl: the frame drawn by the OpenGL renderer and shown as an image. NO when it's off or can't
+// start (no OpenGL 3.3 with framebuffers, or not on Windows yet); drawRect: then draws with Cairo as before.
+- (BOOL)drawWithOpenGL {
+  static int wanted = -1;
+  if (wanted < 0) {
+    const char *choice = getenv("COCOATERMINAL_RENDERER");
+    wanted = (choice != NULL && strcmp(choice, "gl") == 0) ? 1 : 0;
+  }
+  if (!wanted || _glUnavailable) {
+    return NO;
+  }
+  COTTerminalSnapshot *snapshot = [_session currentSnapshot];
+  if (snapshot == nil) {
+    return NO;
+  }
+  COTTerminalTheme *theme = [[_session configuration] theme];
+  NSFont *font = [theme font];
+  BOOL opaque = [theme opacity] >= 1.0;
+  const char *antialias = getenv("COCOATERMINAL_GL_ANTIALIAS");
+  BOOL clearType = opaque && !(antialias != NULL && strcmp(antialias, "grayscale") == 0);
+  NSString *fontKey = [NSString stringWithFormat:@"%@|%.2f|%d", [theme fontFamily], [font pointSize], clearType];
+  if (_glRenderer == NULL || ![fontKey isEqualToString:_glFontKey]) {
+    delete _glRenderer;
+    _glRenderer = NULL;
+    std::string error;
+    NSString *family = [font familyName] ?: [theme fontFamily];
+    std::unique_ptr<cot::GLRenderer> renderer = cot::GLRenderer::create(
+        [family UTF8String], (float)[font pointSize],
+        clearType ? cot::GLRenderer::Antialiasing::ClearType : cot::GLRenderer::Antialiasing::Grayscale, &error);
+    if (!renderer) {
+      fprintf(stderr, "[CocoaTerminal] OpenGL renderer unavailable, drawing with Cairo: %s\n", error.c_str());
+      _glUnavailable = YES;
+      return NO;
+    }
+    _glRenderer = renderer.release();
+    [_glFontKey release];
+    _glFontKey = [fontKey copy];
+    if (_perfLoggingEnabled) fprintf(stderr, "[CocoaTerminal] renderer: %s\n", _glRenderer->description().c_str());
+  }
+
+  NSRect bounds = [self bounds];
+  cot::GLFrame frame;
+  frame.pixelWidth = (int)ceil(NSWidth(bounds));
+  frame.pixelHeight = (int)ceil(NSHeight(bounds));
+  if (frame.pixelWidth <= 0 || frame.pixelHeight <= 0) {
+    return YES;
+  }
+  NSEdgeInsets insets = [theme contentInsets];
+  CGFloat lineHeight = _lineHeight > 0 ? _lineHeight : [font ascender] - [font descender] + [theme lineSpacing];
+  CGFloat cellWidth = _cellWidth > 0 ? _cellWidth : [@"M" sizeWithAttributes:_textAttributes].width;
+  frame.originX = (float)insets.left;
+  frame.originY = (float)insets.top;
+  frame.cellWidth = (float)cellWidth;
+  frame.cellHeight = (float)lineHeight;
+  frame.baseline = (float)([font ascender] + [theme lineSpacing]);  // where Cairo's drawAtPoint: puts it
+  frame.background = COTRGB([theme backgroundColor]);
+  const std::vector<std::vector<cot::TerminalCell>> &rows = snapshot->cells;
+  frame.rows = (int)rows.size();
+  frame.columns = 0;
+  for (const auto &row : rows) frame.columns = std::max(frame.columns, (int)row.size());
+  frame.cells.resize((std::size_t)frame.rows * frame.columns);
+
+  NSInteger selStartRow = 0, selStartCol = 0, selEndRow = 0, selEndCol = 0;
+  if (_hasSelection) {
+    [self normalizedSelectionStartRow:&selStartRow startColumn:&selStartCol endRow:&selEndRow endColumn:&selEndCol];
+  }
+  std::uint32_t selection = COTRGB([theme selectionColor]);
+  // The palette resolved once per colour, not per cell: NSColor conversions are the slow part of building a frame.
+  std::unordered_map<std::uint64_t, std::uint32_t> resolved;
+  auto resolve = [&](const cot::TerminalColor &c, BOOL foreground) -> std::uint32_t {
+    if (c.kind == cot::TerminalColor::Kind::RGB) {
+      return ((std::uint32_t)c.red << 16) | ((std::uint32_t)c.green << 8) | (std::uint32_t)c.blue;
+    }
+    std::uint64_t key = ((std::uint64_t)(int)c.kind << 40) | ((std::uint64_t)(c.index + 1) << 8) | (foreground ? 1 : 0);
+    auto found = resolved.find(key);
+    if (found != resolved.end()) return found->second;
+    std::uint32_t rgb = COTRGB(COTColorFromTerminalColor(c, theme, foreground));
+    resolved.emplace(key, rgb);
+    return rgb;
+  };
+  auto blend = [](std::uint32_t a, std::uint32_t b) -> std::uint32_t {  // halfway, for SGR 2 (dim)
+    return (((((a >> 16) & 0xFF) + ((b >> 16) & 0xFF)) / 2) << 16) | (((((a >> 8) & 0xFF) + ((b >> 8) & 0xFF)) / 2) << 8) |
+           (((a & 0xFF) + (b & 0xFF)) / 2);
+  };
+  for (int r = 0; r < frame.rows; r++) {
+    const std::vector<cot::TerminalCell> &row = rows[(std::size_t)r];
+    for (int c = 0; c < (int)row.size(); c++) {
+      const cot::TerminalCell &cell = row[(std::size_t)c];
+      cot::GLCell &out = frame.cells[(std::size_t)r * frame.columns + c];
+      if (cell.continuation) {
+        out.width = 0;
+        continue;
+      }
+      out.width = (std::uint8_t)std::max(1, cell.width);
+      std::uint32_t fg = resolve(cell.attributes.foreground, YES);
+      std::uint32_t bg = resolve(cell.attributes.background, NO);
+      BOOL defaultBackground = cell.attributes.background.kind == cot::TerminalColor::Kind::Default;
+      if (cell.attributes.inverse) {
+        std::swap(fg, bg);
+        defaultBackground = NO;
+      }
+      if (cell.attributes.dim) fg = blend(fg, defaultBackground ? frame.background : bg);
+      BOOL inSelection = NO;
+      if (_hasSelection) {
+        NSInteger first = (r == selStartRow) ? selStartCol : 0;
+        NSInteger last = (r == selEndRow) ? selEndCol : (NSInteger)row.size();
+        inSelection = r >= selStartRow && r <= selEndRow && c >= first && c < last;
+      }
+      out.foreground = fg;
+      out.background = inSelection ? selection : bg;
+      out.drawBackground = inSelection || !defaultBackground;
+      out.bold = cell.attributes.bold;
+      out.italic = cell.attributes.italic;
+      out.underline = cell.attributes.underline;
+      out.strike = cell.attributes.strike && !cell.attributes.hidden;
+      if (!cell.attributes.hidden && !cell.text.empty() && cell.text != " ") {
+        if ((unsigned char)cell.text[0] >= 0x80) {
+          NSString *text = [[[NSString alloc] initWithBytes:cell.text.data() length:cell.text.size()
+                                                   encoding:NSUTF8StringEncoding] autorelease];
+          NSString *drawable = COTDrawableCellText(text ?: @" ");
+          out.text = std::string([drawable UTF8String] ?: " ");
+          // Keep the presentation selector: the renderer uses U+FE0F to pick a colour emoji font.
+          if (cell.text.find("\xEF\xB8\x8F") != std::string::npos) out.text += "\xEF\xB8\x8F";
+        } else {
+          out.text = cell.text;
+        }
+      }
+    }
+  }
+  if (snapshot->viewportOffset == 0 && [[self window] firstResponder] == self && snapshot->cursorVisible) {
+    COTTerminalCursorStyle style = [theme cursorStyle];
+    frame.cursorStyle = style == COTTerminalCursorStyleBeam        ? cot::GLCursorStyle::Beam
+                        : style == COTTerminalCursorStyleUnderline ? cot::GLCursorStyle::Underline
+                                                                   : cot::GLCursorStyle::Block;
+    frame.cursorColumn = (int)snapshot->cursorColumn;
+    frame.cursorRow = (int)snapshot->cursorRow;
+    frame.cursorColour = COTRGB([theme cursorColor]);
+    frame.cursorTextColour = frame.background;
+  }
+
+  if (_glImage == nil || [_glImage pixelsWide] != frame.pixelWidth || [_glImage pixelsHigh] != frame.pixelHeight) {
+    [_glImage release];
+    _glImage = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:frame.pixelWidth pixelsHigh:frame.pixelHeight
+                                                    bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO
+                                                   colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:frame.pixelWidth * 4
+                                                     bitsPerPixel:32];
+  }
+  std::string error;
+  if (!_glRenderer->render(frame, [_glImage bitmapData], &error)) {
+    fprintf(stderr, "[CocoaTerminal] OpenGL renderer failed, drawing with Cairo: %s\n", error.c_str());
+    _glUnavailable = YES;
+    return NO;
+  }
+  NSTimeInterval blitStart = [NSDate timeIntervalSinceReferenceDate];
+  [_glImage drawInRect:bounds];
+  if (_perfLoggingEnabled) {
+    const cot::GLTiming &t = _glRenderer->lastTiming();
+    fprintf(stderr, "[CocoaTerminal gl] prepare %.2f ms (%zu new glyphs, %zu in atlas), draw %.2f ms, readback %.2f ms, image %.2f ms\n",
+            t.prepare, t.glyphsRasterised, t.atlasGlyphs, t.draw, t.readback,
+            ([NSDate timeIntervalSinceReferenceDate] - blitStart) * 1000);
+  }
+  return YES;
+}
+
 - (void)drawRect:(NSRect)dirtyRect {
   _perfDrawCalls += 1;
+  if ([self drawWithOpenGL]) {
+    return;
+  }
   COTTerminalTheme *theme = [[_session configuration] theme];
   NSColor *backgroundColor = [theme backgroundColor];
   if ([theme opacity] < 1.0) {

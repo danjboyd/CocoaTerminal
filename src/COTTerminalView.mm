@@ -1055,6 +1055,17 @@ static std::uint32_t COTRGB(NSColor *color) {
         NSColor *behind = inSelection ? selectionColor : (defaultBackground ? [theme backgroundColor] : background);
         drawnHere = COTDrawBoxCell(code, cellRect, foreground, behind);
       }
+      // Emoji, and anything above U+FFFF, drawn by Cairo straight from fontconfig's font (COTCairoCells): GNUstep's
+      // text drawing has no glyph above U+FFFF, so 🚀 came out blank. In colour from a colour emoji font if there is one.
+      if (!hidden && !drawnHere && !cell.text.empty() && (unsigned char)cell.text[0] >= 0xE2) {
+        NSString *text = [[[NSString alloc] initWithBytes:cell.text.data() length:cell.text.size() encoding:NSUTF8StringEncoding] autorelease];
+        UTF32Char code = [text length] > 0 ? [text characterAtIndex:0] : 0;
+        if ([text length] > 1 && code >= 0xD800 && code <= 0xDBFF)
+          code = 0x10000 + ((code - 0xD800) << 10) + ([text characterAtIndex:1] - 0xDC00);
+        BOOL emoji = (COTContainsCharacter(text, 0xFE0F) || COTIsDefaultEmoji(code)) && !COTContainsCharacter(text, 0xFE0E);
+        if (emoji || code >= 0x10000)
+          drawnHere = COTDrawCairoGlyphCell(cell.text, code, emoji, [cellFont familyName], [cellFont pointSize], cellRect, foreground);
+      }
       NSString *cellString = nil;
       NSFont *fallback = nil;
       if (!hidden && !drawnHere && !cell.text.empty() && (unsigned char)cell.text[0] >= 0x80) {
@@ -1127,10 +1138,14 @@ static std::uint32_t COTRGB(NSColor *color) {
       NSUInteger cursorColumn = snapshot->cursorColumn;
       NSString *cursorText = @" ";
       NSFont *cursorFont = font;
+      std::string cursorUTF8;
+      int cursorCells = 1;
       if (cursorRow < rows.size() && cursorColumn < rows[cursorRow].size()) {
         const cot::TerminalCell &cell = rows[cursorRow][cursorColumn];
         cursorFont = [self fontForBold:cell.attributes.bold italic:cell.attributes.italic];
         if (!cell.continuation && !cell.text.empty()) {
+          cursorUTF8 = cell.text;
+          cursorCells = std::max(1, cell.width);
           NSString *temp = [[NSString alloc] initWithBytes:cell.text.data()
                                                     length:cell.text.size()
                                                   encoding:NSUTF8StringEncoding];
@@ -1139,9 +1154,18 @@ static std::uint32_t COTRGB(NSColor *color) {
           }
         }
       }
-      // A box drawing character under the cursor: rectangles too, in the cursor's text colour.
-      UTF32Char cursorCode = [cursorText length] == 1 ? [cursorText characterAtIndex:0] : 0;
-      if (!COTDrawBoxCell(cursorCode, cursorRect, [theme backgroundColor], [theme cursorColor])) {
+      // Box drawing and emoji under the cursor: drawn as in any other cell, in the cursor's text colour.
+      UTF32Char cursorCode = [cursorText length] > 0 ? [cursorText characterAtIndex:0] : 0;
+      if ([cursorText length] > 1 && cursorCode >= 0xD800 && cursorCode <= 0xDBFF)
+        cursorCode = 0x10000 + ((cursorCode - 0xD800) << 10) + ([cursorText characterAtIndex:1] - 0xDC00);
+      BOOL cursorEmoji = (COTContainsCharacter(cursorText, 0xFE0F) || COTIsDefaultEmoji(cursorCode)) &&
+                         !COTContainsCharacter(cursorText, 0xFE0E);
+      NSRect cursorCellRect = NSMakeRect(cursorX, cursorY, cellWidth * cursorCells, lineHeight);
+      BOOL cursorDrawn = COTDrawBoxCell(cursorCode, cursorRect, [theme backgroundColor], [theme cursorColor]);
+      if (!cursorDrawn && (cursorEmoji || cursorCode >= 0x10000) && !cursorUTF8.empty())
+        cursorDrawn = COTDrawCairoGlyphCell(cursorUTF8, cursorCode, cursorEmoji, [cursorFont familyName], [cursorFont pointSize],
+                                            cursorCellRect, [theme backgroundColor]);
+      if (!cursorDrawn) {
         NSMutableDictionary *cursorAttributes = [NSMutableDictionary dictionaryWithDictionary:_textAttributes];
         [cursorAttributes setObject:[theme backgroundColor] forKey:NSForegroundColorAttributeName];
         [cursorAttributes setObject:cursorFont forKey:NSFontAttributeName];

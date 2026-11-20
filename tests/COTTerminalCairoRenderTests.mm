@@ -2,11 +2,13 @@
 // Copyright (C) 2026 Daniel Boyd
 //
 // The Cairo renderer, as good as the OpenGL one: box drawing joins between rows (a font's │ stops short of the cell once
-// there's line spacing, so a vertical line had a gap at every row). Needs a display; skips without.
+// there's line spacing, so a vertical line had a gap at every row), and an emoji above the BMP (🚀) is drawn rather
+// than left blank (GNUstep's Cairo backend draws glyphs as UTF-16 units, so it can't). Needs a display; skips without.
 
 #import <CocoaTerminal/CocoaTerminal.h>
 
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
 
@@ -43,6 +45,22 @@ static void check(BOOL condition, const char *message) {
 }
 
 static BOOL Lit(Pixel p) { return (p.r + p.g + p.b) / 3 > 0.5; }           // the white foreground, on black
+static BOOL NotBackground(Pixel p) { return p.r + p.g + p.b > 0.15; }
+static BOOL Colourful(Pixel p) { return fmax(p.r, fmax(p.g, p.b)) - fmin(p.r, fmin(p.g, p.b)) > 0.25; }
+
+// Whether fontconfig has a colour font with 🚀 (Noto Color Emoji, say). Without one a monochrome glyph will do.
+static BOOL ColourEmojiFontInstalled(void) {
+#if !defined(__APPLE__) && !defined(_WIN32)
+  FILE *list = popen("fc-list ':charset=1f680:color=true' family 2>/dev/null", "r");
+  if (list == NULL) return NO;
+  char line[256];
+  BOOL found = fgets(line, sizeof line, list) != NULL;
+  pclose(list);
+  return found;
+#else
+  return YES;
+#endif
+}
 
 int main() {
   NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
@@ -59,9 +77,9 @@ int main() {
   COTTerminalTheme *theme = [configuration theme];
   [theme setForegroundColor:[NSColor whiteColor]];
   [theme setBackgroundColor:[NSColor blackColor]];
-  // Rows 0-5: │ in column 0. Then END.
+  // Rows 0-5: │ in column 0. Row 6: 🚀 in columns 2-3. Then END.
   NSString *script = @"i=0; while [ $i -lt 6 ]; do printf '\\342\\224\\202\\r\\n'; i=$((i+1)); done; "
-                     @"printf 'END\\r\\n'; exec sleep 30";
+                     @"printf '  \\360\\237\\232\\200\\r\\nEND\\r\\n'; exec sleep 30";
   [configuration setShellCommand:[NSArray arrayWithObjects:@"/bin/sh", @"-c", script, nil]];
   NSRect frame = NSMakeRect(0, 0, 400, 240);
   NSWindow *window = [[NSWindow alloc] initWithContentRect:frame styleMask:NSBorderlessWindowMask backing:NSBackingStoreBuffered defer:NO];
@@ -107,6 +125,18 @@ int main() {
   std::cout << "vertical line at x=" << bestX << ": " << gaps << " gap pixels in " << (to - from) << "\n";
   expect(bestCount > 0, "the vertical line is drawn");
   check(gaps == 0, "a vertical box line has no gaps between rows");
+
+  // (b) The emoji cell (row 6, columns 2-3) is not blank; in colour when a colour emoji font draws it.
+  NSInteger drawn = 0, colourful = 0;
+  for (NSInteger y = (NSInteger)(top + 6 * lineHeight); y < (NSInteger)(top + 7 * lineHeight); y++)
+    for (NSInteger x = (NSInteger)(left + 2 * cellWidth); x < (NSInteger)(left + 4 * cellWidth); x++) {
+      Pixel p = PixelAt(bitmap, x, y);
+      if (NotBackground(p)) drawn++;
+      if (Colourful(p)) colourful++;
+    }
+  std::cout << "emoji cell: " << drawn << " drawn pixels, " << colourful << " in colour\n";
+  check(drawn > 20, "an emoji cell is not blank");
+  if (ColourEmojiFontInstalled()) check(colourful > 20, "the emoji is in colour (a colour emoji font is installed)");
 
   [session terminate];
   [pool release];

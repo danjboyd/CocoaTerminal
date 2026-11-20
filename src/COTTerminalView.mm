@@ -362,6 +362,7 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family, BOOL
   self = [super initWithFrame:frameRect];
   if (self) {
     _session = [[COTTerminalSession alloc] initWithConfiguration:configuration];
+    if (_session == nil) { [self release]; return nil; }
     [_session setDelegate:self];
     _baseFontSize = [[configuration theme] fontSize];
     _activeMouseButton = -1;
@@ -1370,9 +1371,10 @@ static std::uint32_t COTRGB(NSColor *color) {
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
   SEL action = [item action];
   if (action == @selector(copy:)) {
-    return _hasSelection;
+    return [_session allowsLocalCopy] && _hasSelection;
   }
-  if (action == @selector(paste:) || action == @selector(selectAll:)) {
+  if (action == @selector(paste:)) return [_session allowsInput];
+  if (action == @selector(selectAll:)) {
     return YES;
   }
   return YES;
@@ -1447,6 +1449,7 @@ static std::uint32_t COTRGB(NSColor *color) {
 }
 
 - (void)copySelection {
+  if (![_session allowsLocalCopy]) return;
   NSString *text = [self selectedText];
   if ([text length] == 0) {
     return;
@@ -1457,6 +1460,7 @@ static std::uint32_t COTRGB(NSColor *color) {
 }
 
 - (void)pasteFromClipboard {
+  if (![_session allowsInput]) return;
   NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
   NSString *text = [pasteboard stringForType:NSStringPboardType];
   if ([text length] == 0) {
@@ -1756,7 +1760,7 @@ static std::uint32_t COTRGB(NSColor *color) {
 }
 
 - (void)updateTerminalSizeFromBounds {
-  if (_session == nil) {
+  if (_session == nil || [_session fixedGrid]) {
     return;
   }
   COTTerminalTheme *theme = [[_session configuration] theme];

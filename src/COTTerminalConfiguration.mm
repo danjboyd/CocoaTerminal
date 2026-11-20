@@ -42,6 +42,10 @@
     _workingDirectory = [NSHomeDirectory() copy];
     _theme = [[COTTerminalTheme defaultTheme] retain];
     _scrollbackLineLimit = 10000;
+    _inputPolicy = COTTerminalInputPolicyInteractive;
+    _sizingPolicy = COTTerminalSizingPolicyFollowView;
+    _initialColumns = 80;
+    _initialRows = 24;
     _keyboardCapturePolicy = COTKeyboardCapturePolicyTerminalDefault;
     _exitBehavior = COTTerminalExitBehaviorKeepOpen;
     _renderer = COTTerminalRendererCairo;
@@ -60,6 +64,10 @@
   copy.keyboardCapturePolicy = self.keyboardCapturePolicy;
   copy.exitBehavior = self.exitBehavior;
   copy.renderer = self.renderer;
+  copy.inputPolicy = self.inputPolicy;
+  copy.sizingPolicy = self.sizingPolicy;
+  copy.initialColumns = self.initialColumns;
+  copy.initialRows = self.initialRows;
   return copy;
 }
 
@@ -122,5 +130,9 @@
 @synthesize keyboardCapturePolicy = _keyboardCapturePolicy;
 @synthesize exitBehavior = _exitBehavior;
 @synthesize renderer = _renderer;
+@synthesize inputPolicy = _inputPolicy;
+@synthesize sizingPolicy = _sizingPolicy;
+@synthesize initialColumns = _initialColumns;
+@synthesize initialRows = _initialRows;
 
 @end

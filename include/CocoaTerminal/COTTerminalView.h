@@ -36,6 +36,12 @@ extern NSString *const COTTerminalExitStatusUserInfoKey;
 - (void)pasteFromClipboard;
 - (void)clearSelection;
 - (void)selectAll;
+/// Counters and how the view draws. Supported keys:
+/// - @"renderer": @"opengl" or @"cairo", whichever drew the last frame (OpenGL falls back to Cairo when it can't run);
+/// - @"glPresentation": @"window" (OpenGL straight into the window), @"image" (rendered off screen and drawn as an
+///   image) or @"none" (Cairo);
+/// - @"drawCalls", @"screenUpdates", @"dirtyRows", @"fullRedraws" (NSNumber counts) and @"maxFPS" (the repaint cap).
+/// COCOATERMINAL_PERF_LOG=1 also logs them to stderr.
 - (NSDictionary *)performanceSnapshot;
 
 /// Search through the scrollback and the screen. -findPrevious: looks up (towards older output) and -findNext: down;

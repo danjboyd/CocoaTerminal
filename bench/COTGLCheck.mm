@@ -593,7 +593,15 @@ static void MeasureOffscreen(int width, int height) {
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
   (void)notification;
   @try {
-    if (_only == nil || [_only isEqualToString:@"child"]) RunChecks(YES, _cycles);
+    if (_only == nil || [_only isEqualToString:@"child"]) {
+      // A back end without OpenGL (GNUstep's x11 built without GLX has no pixel format class) can't make an
+      // NSOpenGLView at all: say so rather than failing every check.
+      if ([NSOpenGLView defaultPixelFormat] == nil) {
+        Report("SKIP", "child: NSOpenGLView", @"this GNUstep back end has no OpenGL pixel format (built without GLX?)");
+      } else {
+        RunChecks(YES, _cycles);
+      }
+    }
     if (_only == nil || [_only isEqualToString:@"offscreen"]) RunChecks(NO, _cycles);
     if (_only == nil || [_only isEqualToString:@"offscreen"] || [_only isEqualToString:@"cost"]) MeasureOffscreen(_width, _height);
   } @catch (NSException *e) {

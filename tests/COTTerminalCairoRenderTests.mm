@@ -57,6 +57,8 @@ static BOOL ColourEmojiFontInstalled(void) {
   BOOL found = fgets(line, sizeof line, list) != NULL;
   pclose(list);
   return found;
+#elif defined(_WIN32)
+  return NO;  // GNUstep's Windows text path draws emoji, in monochrome; COTCairoCells leaves Windows as it was
 #else
   return YES;
 #endif
@@ -70,7 +72,11 @@ int main() {
     return 0;
   }
 #endif
+#if defined(_WIN32)
+  _putenv_s("COCOATERMINAL_RENDERER", "cairo");
+#else
   setenv("COCOATERMINAL_RENDERER", "cairo", 1);
+#endif
   [NSApplication sharedApplication];
   COTTerminalConfiguration *configuration = [COTTerminalConfiguration defaultConfiguration];
   [configuration setRenderer:COTTerminalRendererCairo];
@@ -80,7 +86,13 @@ int main() {
   // Rows 0-5: │ in column 0. Row 6: 🚀 in columns 2-3. Then END.
   NSString *script = @"i=0; while [ $i -lt 6 ]; do printf '\\342\\224\\202\\r\\n'; i=$((i+1)); done; "
                      @"printf '  \\360\\237\\232\\200\\r\\nEND\\r\\n'; exec sleep 30";
-  [configuration setShellCommand:[NSArray arrayWithObjects:@"/bin/sh", @"-c", script, nil]];
+#if defined(_WIN32)
+  NSString *shell = @"C:\\msys64\\usr\\bin\\sh.exe";  // MSYS2's, as the bench uses
+#else
+  NSString *shell = @"/bin/sh";
+#endif
+  if (getenv("COT_CAIRO_TEST_SHELL")) shell = [NSString stringWithUTF8String:getenv("COT_CAIRO_TEST_SHELL")];
+  [configuration setShellCommand:[NSArray arrayWithObjects:shell, @"-c", script, nil]];
   NSRect frame = NSMakeRect(0, 0, 400, 240);
   NSWindow *window = [[NSWindow alloc] initWithContentRect:frame styleMask:NSBorderlessWindowMask backing:NSBackingStoreBuffered defer:NO];
   COTTerminalView *view = [[COTTerminalView alloc] initWithFrame:frame configuration:configuration];

@@ -18,6 +18,7 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#include <imm.h>
 #endif
 
 static int failures = 0;
@@ -169,6 +170,40 @@ int main() {
     }
     [session sendInput:[@"\r" dataUsingEncoding:NSUTF8StringEncoding]];  // cmd runs it and shows a new prompt
     Spin(0.4);
+  }
+
+  // The input method's composition window follows the cursor: typing three characters moves it three times as far as
+  // typing one, on the same line, inside the window.
+  HIMC ime = ImmGetContext(hwnd);
+  if (ime == NULL) {
+    std::cout << "IME position: skipped (no input method context)\n";
+  } else {
+    ImmReleaseContext(hwnd, ime);
+    auto compositionPoint = [&]() {
+      POINT p = {-1, -1};
+      HIMC context = ImmGetContext(hwnd);
+      COMPOSITIONFORM form;
+      if (context != NULL && ImmGetCompositionWindow(context, &form)) p = form.ptCurrentPos;
+      if (context != NULL) ImmReleaseContext(hwnd, context);
+      return p;
+    };
+    Spin(0.4);
+    POINT start = compositionPoint();
+    [session sendInput:[@"a" dataUsingEncoding:NSUTF8StringEncoding]];
+    Spin(0.4);
+    POINT one = compositionPoint();
+    [session sendInput:[@"bc" dataUsingEncoding:NSUTF8StringEncoding]];
+    Spin(0.4);
+    POINT three = compositionPoint();
+    RECT client;
+    GetClientRect(hwnd, &client);
+    std::cout << "IME position: " << start.x << "," << start.y << " -> " << one.x << "," << one.y << " -> " << three.x
+              << "," << three.y << " in a " << client.right << "x" << client.bottom << " client area\n";
+    long step = one.x - start.x;
+    check(step > 0 && labs((three.x - start.x) - 3 * step) <= 2, "the IME's composition point moves with the cursor");
+    check(start.y == one.y && one.y == three.y, "and stays on the cursor's line");
+    check(start.x >= 0 && three.x < client.right && start.y >= 0 && start.y < client.bottom,
+          "inside the window's client area");
   }
 
   [[view session] terminate];

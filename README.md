@@ -70,6 +70,33 @@ Differences from Linux worth knowing:
   in `cmd.exe`): that's the Cygwin console layer, whichever ConPTY is used.
 - MSYS2's `gnustep-gui.pc` omits `-lgnustep-gui`; the CMake build adds it.
 
+## Shell Integration
+
+A shell that marks its prompts and commands with OSC 133, as iTerm2, WezTerm and Windows Terminal read them, lets
+CocoaTerminal find them:
+- Cmd+Shift+Up and Down jump between prompts (Ctrl+Shift on GNUstep);
+- `-[COTTerminalSession lastFinishedCommand]` gives the last command's command line, output and exit status;
+- the session's delegate hears `terminalSession:didFinishCommand:` as each one finishes, and
+  `COTTerminalSessionCommandDidFinishNotification` is posted too.
+
+Marks on the alternate screen (full-screen programs) are ignored. Windows' ConPTY passes the marks on.
+
+For bash, in `~/.bashrc`:
+
+```sh
+PS0='\[\e]133;C\a\]'
+PROMPT_COMMAND='printf "\e]133;D;%s\a" "$?"'
+PS1='\[\e]133;A\a\]'"$PS1"'\[\e]133;B\a\]'
+```
+
+For zsh, in `~/.zshrc`:
+
+```sh
+precmd() { print -Pn "\e]133;D;$?\a" }
+preexec() { print -Pn "\e]133;C\a" }
+PS1=$'%{\e]133;A\a%}'"$PS1"$'%{\e]133;B\a%}'
+```
+
 ## Demo Configuration
 
 `CocoaTerminalDemo` reads an optional TOML config file using Alacritty's

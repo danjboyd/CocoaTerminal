@@ -89,6 +89,20 @@ struct GridTrampolines {
   static int selectionQuery(VTermSelectionMask mask, void* user) {
     return static_cast<TerminalGrid*>(user)->onSelectionQuery(static_cast<int>(mask));
   }
+  static int osc(int command, VTermStringFragment frag, void* user) {
+    return static_cast<TerminalGrid*>(user)->onOSC(command, &frag);
+  }
+};
+
+// OSC sequences libvterm doesn't handle itself come here: shell integration (133).
+static const VTermStateFallbacks kFallbacks = {
+  nullptr,  // control
+  nullptr,  // csi
+  GridTrampolines::osc,
+  nullptr,  // dcs
+  nullptr,  // apc
+  nullptr,  // pm
+  nullptr,  // sos
 };
 
 static const VTermSelectionCallbacks kSelectionCallbacks = {
@@ -147,6 +161,7 @@ void TerminalGrid::initVTerm() {
   clipboardBuffer_.assign(64 * 1024, 0);
   vterm_state_set_selection_callbacks(state, &kSelectionCallbacks, this,
                                       clipboardBuffer_.data(), clipboardBuffer_.size());
+  vterm_screen_set_unrecognised_fallbacks(screen, &kFallbacks, this);
 
   vt_ = vt;
   screenPtr_ = screen;
@@ -164,7 +179,9 @@ void TerminalGrid::setScrollbackLimit(std::size_t limit) {
   scrollbackLimit_ = limit;
   while (scrollback_.size() > scrollbackLimit_) {
     scrollback_.pop_front();
+    ++lineBase_;
   }
+  dropMarksBefore(lineBase_);
   if (viewportOffset_ > scrollback_.size()) {
     viewportOffset_ = scrollback_.size();
   }
@@ -299,6 +316,21 @@ void TerminalGrid::ingest(const char* bytes, std::size_t length) {
   vterm_input_write(static_cast<VTerm*>(vt_), rewritten.data(), rewritten.size());
   vterm_screen_flush_damage(static_cast<VTermScreen*>(screenPtr_));
   rebuildDirtyVisibleCells();
+  // Commands that finished in this write, now that the screen's text is up to date.
+  if (!finishedPending_.empty()) {
+    std::vector<ShellMark> finished;
+    finished.swap(finishedPending_);
+    for (const ShellMark& done : finished) {
+      for (std::size_t i = marks_.size(); i-- > 0;) {
+        const ShellMark& mark = marks_[i];
+        if (mark.kind == 'D' && mark.lineId == done.lineId && mark.column == done.column) {
+          ShellCommand command;
+          if (commandFinishedCallback_ && buildCommand(i, &command)) commandFinishedCallback_(command);
+          break;
+        }
+      }
+    }
+  }
 }
 
 void TerminalGrid::snoopPrivateModes(const char* bytes, std::size_t length) {
@@ -608,12 +640,16 @@ void TerminalGrid::rebuildVisibleRow(std::size_t row) {
 
 void TerminalGrid::appendScrollback(std::vector<TerminalCell> line) {
   if (scrollbackLimit_ == 0) {
+    ++lineBase_;  // the line scrolled off the top, kept nowhere: what was below it moves up a line
+    dropMarksBefore(lineBase_);
     return;
   }
   scrollback_.push_back(std::move(line));
   while (scrollback_.size() > scrollbackLimit_) {
     scrollback_.pop_front();
+    ++lineBase_;
   }
+  dropMarksBefore(lineBase_);
   if (viewportOffset_ > scrollback_.size()) {
     viewportOffset_ = scrollback_.size();
   }
@@ -1018,8 +1054,158 @@ int TerminalGrid::onScrollbackPop(int cols, void* cellsPtr) {
 }
 
 int TerminalGrid::onScrollbackClear() {
+  lineBase_ += scrollback_.size();
   scrollback_.clear();
+  dropMarksBefore(lineBase_);
   return 1;
+}
+
+// ---------------------------------------------------------------- shell integration (OSC 133)
+
+int TerminalGrid::onOSC(int command, const void* fragmentPtr) {
+  if (command != 133) {
+    return 0;
+  }
+  const VTermStringFragment* frag = static_cast<const VTermStringFragment*>(fragmentPtr);
+  if (frag->initial) {
+    oscAccumulator_.clear();
+  }
+  if (oscAccumulator_.size() < 4096) {
+    oscAccumulator_.append(frag->str, frag->len);
+  }
+  if (frag->final) {
+    onShellMark(oscAccumulator_);
+    oscAccumulator_.clear();
+  }
+  return 1;
+}
+
+void TerminalGrid::onShellMark(const std::string& payload) {
+  if (payload.empty() || usingAlternateScreen_) {
+    return;
+  }
+  char kind = payload[0];
+  if (kind != 'A' && kind != 'B' && kind != 'C' && kind != 'D') {
+    return;
+  }
+  ShellMark mark;
+  mark.kind = kind;
+  // The cursor as libvterm has it now, mid-input: the grid's own copy is only updated after the write.
+  VTermPos cursor;
+  vterm_state_get_cursorpos(vterm_obtain_state(static_cast<VTerm*>(vt_)), &cursor);
+  mark.lineId = lineBase_ + scrollback_.size() + (std::uint64_t)std::max(0, cursor.row);
+  mark.column = (std::size_t)std::max(0, cursor.col);
+  if (kind == 'D' && payload.size() > 2 && payload[1] == ';') {
+    char* end = nullptr;
+    long status = std::strtol(payload.c_str() + 2, &end, 10);
+    if (end != payload.c_str() + 2) mark.exitStatus = (int)status;
+  }
+  marks_.push_back(mark);
+  while (marks_.size() > 20000) {
+    marks_.pop_front();
+  }
+  if (kind == 'D' && commandFinishedCallback_) {
+    finishedPending_.push_back(mark);  // reported once this write is done and the screen's text is current
+  }
+}
+
+void TerminalGrid::setCommandFinishedCallback(CommandFinishedCallback callback) {
+  commandFinishedCallback_ = std::move(callback);
+}
+
+void TerminalGrid::dropMarksBefore(std::uint64_t lineId) {
+  while (!marks_.empty() && marks_.front().lineId < lineId) {
+    marks_.pop_front();
+  }
+}
+
+std::vector<std::size_t> TerminalGrid::promptLines() const {
+  std::vector<std::size_t> lines;
+  for (std::size_t i = 0; i < marks_.size(); ++i) {
+    const ShellMark& mark = marks_[i];
+    // A prompt is an A; a B with no A since the last D (a shell that marks only the command line) counts too.
+    bool prompt = mark.kind == 'A';
+    if (mark.kind == 'B') {
+      prompt = true;
+      for (std::size_t j = i; j-- > 0;) {
+        if (marks_[j].kind == 'A') { prompt = false; break; }
+        if (marks_[j].kind == 'D') break;
+      }
+    }
+    if (prompt && mark.lineId >= lineBase_) {
+      std::size_t line = (std::size_t)(mark.lineId - lineBase_);
+      if (lines.empty() || lines.back() != line) lines.push_back(line);
+    }
+  }
+  return lines;
+}
+
+bool TerminalGrid::lastFinishedCommand(ShellCommand* out) const {
+  for (std::size_t i = marks_.size(); i-- > 0;) {
+    if (marks_[i].kind == 'D') {
+      return buildCommand(i, out);
+    }
+  }
+  return false;
+}
+
+// The command a D mark finishes: back from it to its C (output), B (command line) and A (prompt), stopping at the
+// previous D.
+bool TerminalGrid::buildCommand(std::size_t finishIndex, ShellCommand* out) const {
+  const ShellMark& finish = marks_[finishIndex];
+  const ShellMark* output = nullptr;
+  const ShellMark* commandLine = nullptr;
+  const ShellMark* prompt = nullptr;
+  for (std::size_t j = finishIndex; j-- > 0;) {
+    const ShellMark& mark = marks_[j];
+    if (mark.kind == 'D') break;
+    if (mark.kind == 'C' && output == nullptr) output = &mark;
+    if (mark.kind == 'B' && commandLine == nullptr) commandLine = &mark;
+    if (mark.kind == 'A' && prompt == nullptr) prompt = &mark;
+  }
+  if (output == nullptr || output->lineId < lineBase_) {
+    return false;
+  }
+  if (out != nullptr) {
+    out->exitStatus = finish.exitStatus;
+    out->output = textBetween(output->lineId, output->column, finish.lineId, finish.column);
+    out->command = commandLine != nullptr ? textBetween(commandLine->lineId, commandLine->column, output->lineId,
+                                                        output->column)
+                                          : std::string();
+    // The command line's own newline (typed Enter) leaves C at the start of the next line: the output, not the command.
+    while (!out->command.empty() && (out->command.back() == '\n' || out->command.back() == ' ')) out->command.pop_back();
+    const ShellMark* start = prompt != nullptr ? prompt : (commandLine != nullptr ? commandLine : output);
+    out->promptLine = start->lineId >= lineBase_ ? (std::size_t)(start->lineId - lineBase_) : 0;
+    out->outputLine = (std::size_t)(output->lineId - lineBase_);
+  }
+  return true;
+}
+
+// The text from (fromId, fromColumn) up to, not including, (toId, toColumn), lines joined with '\n' and each line's
+// trailing spaces dropped. Lines no longer held are left out.
+std::string TerminalGrid::textBetween(std::uint64_t fromId, std::size_t fromColumn, std::uint64_t toId,
+                                      std::size_t toColumn) const {
+  std::string result;
+  std::uint64_t first = std::max(fromId, lineBase_);
+  std::uint64_t last = std::min<std::uint64_t>(toId, lineBase_ + scrollback_.size() + screen_.size() - 1);
+  for (std::uint64_t id = first; id <= last && id <= toId; ++id) {
+    std::size_t line = (std::size_t)(id - lineBase_);
+    const std::vector<TerminalCell>& cells =
+        line < scrollback_.size() ? scrollback_[line] : screen_[line - scrollback_.size()];
+    std::size_t begin = id == fromId ? fromColumn : 0;
+    std::size_t end = id == toId ? std::min(toColumn, cells.size()) : cells.size();
+    if (id == toId && toColumn == 0 && id != fromId) {
+      break;  // ends at the start of this line: nothing of it, and no newline before it
+    }
+    std::string text;
+    for (std::size_t c = begin; c < end && c < cells.size(); ++c) {
+      if (!cells[c].continuation) text += cells[c].text.empty() ? std::string(" ") : cells[c].text;
+    }
+    while (!text.empty() && text.back() == ' ') text.pop_back();
+    if (id != first) result += '\n';
+    result += text;
+  }
+  return result;
 }
 
 void TerminalGrid::onOutput(const char* s, std::size_t len) {

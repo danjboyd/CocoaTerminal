@@ -1919,6 +1919,15 @@ static std::uint32_t COTRGB(NSColor *color) {
   }
   NSInteger pageStep = MAX((NSInteger)1, (NSInteger)([_session rows] / 2));
   unsigned short keyCode = COTMacKeyCode(event);
+  // Cmd/Ctrl+Shift+Up and Down: to the previous or next prompt (shell integration).
+  if (hasCmd && hasShift && (keyCode == 126 || keyCode == 125)) {
+    if (keyCode == 126) {
+      [self scrollToPreviousPrompt];
+    } else {
+      [self scrollToNextPrompt];
+    }
+    return YES;
+  }
   if (hasCmd) {
     switch (keyCode) {
     case 126:
@@ -1948,6 +1957,39 @@ static std::uint32_t COTRGB(NSColor *color) {
     }
   }
   return NO;
+}
+
+// Shell integration: puts the previous (older) or next prompt at the top of the view. NO if there's none that way.
+- (BOOL)scrollToPreviousPrompt {
+  return [self scrollToPromptBackwards:YES];
+}
+
+- (BOOL)scrollToNextPrompt {
+  return [self scrollToPromptBackwards:NO];
+}
+
+- (BOOL)scrollToPromptBackwards:(BOOL)backwards {
+  NSArray<NSNumber *> *prompts = [_session promptLines];  // waits for the terminal queue: the snapshot below is current
+  NSInteger scrollback = (NSInteger)[_session scrollbackLineCount];
+  NSInteger top = scrollback - (NSInteger)[_session viewportOffset];  // the line in the view's first row
+  NSInteger target = -1;
+  for (NSNumber *number in prompts) {
+    NSInteger line = (NSInteger)[number unsignedIntegerValue];
+    if (backwards && line < top) target = line;  // the last one above
+    if (!backwards && line > top) {
+      target = line;  // the first one below
+      break;
+    }
+  }
+  if (target < 0) {
+    if (!backwards && [_session viewportOffset] > 0) {
+      [_session scrollToBottom];  // past the last prompt: back to the live screen
+      return YES;
+    }
+    return NO;
+  }
+  [_session setViewportOffset:(NSUInteger)MAX((NSInteger)0, scrollback - target)];
+  return YES;
 }
 
 - (BOOL)handleZoomShortcut:(NSEvent *)event {

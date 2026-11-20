@@ -195,6 +195,11 @@ if(COCOATERMINAL_BUILD_TESTS)
   target_link_libraries(CocoaTerminalSearchTests PRIVATE CocoaTerminal::CocoaTerminal)
   add_test(NAME CocoaTerminalSearchTests COMMAND CocoaTerminalSearchTests)
 
+  add_executable(CocoaTerminalShellIntegrationTests tests/COTShellIntegrationTests.mm)
+  set_target_properties(CocoaTerminalShellIntegrationTests PROPERTIES LINKER_LANGUAGE OBJCXX)
+  target_link_libraries(CocoaTerminalShellIntegrationTests PRIVATE CocoaTerminal::CocoaTerminal)
+  add_test(NAME CocoaTerminalShellIntegrationTests COMMAND CocoaTerminalShellIntegrationTests)
+
   add_executable(CocoaTerminalCaptureTests tests/COTTerminalCaptureTests.mm)
   set_target_properties(CocoaTerminalCaptureTests PROPERTIES LINKER_LANGUAGE OBJCXX)
   target_link_libraries(CocoaTerminalCaptureTests PRIVATE CocoaTerminal::CocoaTerminal)

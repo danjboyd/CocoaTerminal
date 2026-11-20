@@ -31,6 +31,12 @@
 #endif
 
 static NSString *const COTTerminalErrorDomain = @"COTTerminalErrorDomain";
+NSString *const COTTerminalSessionCommandDidFinishNotification = @"COTTerminalSessionCommandDidFinishNotification";
+NSString *const COTTerminalCommandTextKey = @"command";
+NSString *const COTTerminalCommandOutputKey = @"output";
+NSString *const COTTerminalCommandExitStatusKey = @"exitStatus";
+NSString *const COTTerminalCommandPromptLineKey = @"promptLine";
+NSString *const COTTerminalCommandOutputLineKey = @"outputLine";
 static NSUInteger const COTTerminalMaximumColumns = 1000;
 static NSUInteger const COTTerminalMaximumRows = 1000;
 
@@ -330,6 +336,9 @@ struct COTOutputBatch {
     _grid->setClipboardQueryCallback([unsafeSelf](int mask) {
       [unsafeSelf answerClipboardQueryWithMask:mask];
     });
+    _grid->setCommandFinishedCallback([unsafeSelf](const cot::TerminalGrid::ShellCommand &command) {
+      [unsafeSelf deliverFinishedCommand:command];
+    });
 #if defined(_WIN32)
     _conpty = NULL;
     _windowsExitCode = 0;
@@ -437,6 +446,68 @@ struct COTOutputBatch {
     [delegate release];
   }];
   [ownedValue release];
+}
+
+static NSString *COTStringFromUTF8(const std::string &text) {
+  NSString *value = [[[NSString alloc] initWithBytes:text.data() length:text.size() encoding:NSUTF8StringEncoding]
+      autorelease];
+  return value != nil ? value : @"";
+}
+
+// A finished command as the public API gives it (see -lastFinishedCommand).
+static NSDictionary *COTCommandDictionary(const cot::TerminalGrid::ShellCommand &command) {
+  return [NSDictionary dictionaryWithObjectsAndKeys:
+      COTStringFromUTF8(command.command), COTTerminalCommandTextKey,
+      COTStringFromUTF8(command.output), COTTerminalCommandOutputKey,
+      [NSNumber numberWithInt:command.exitStatus], COTTerminalCommandExitStatusKey,
+      [NSNumber numberWithUnsignedInteger:command.promptLine], COTTerminalCommandPromptLineKey,
+      [NSNumber numberWithUnsignedInteger:command.outputLine], COTTerminalCommandOutputLineKey, nil];
+}
+
+- (void)deliverFinishedCommand:(const cot::TerminalGrid::ShellCommand &)command {
+  NSDictionary *owned = [COTCommandDictionary(command) retain];  // the copied block keeps its own reference
+  [self deliverOnMain:^(COTTerminalSession *session) {
+    id<COTTerminalDelegate> delegate = [[session delegate] retain];
+    if ([delegate respondsToSelector:@selector(terminalSession:didFinishCommand:)]) {
+      [delegate terminalSession:session didFinishCommand:owned];
+    }
+    [[NSNotificationCenter defaultCenter] postNotificationName:COTTerminalSessionCommandDidFinishNotification
+                                                        object:session
+                                                      userInfo:owned];
+    [delegate release];
+  }];
+  [owned release];
+}
+
+- (NSArray<NSNumber *> *)promptLines {
+  NSMutableArray<NSNumber *> *result = [NSMutableArray array];
+  if (_grid == NULL) {
+    return result;
+  }
+  __block std::vector<std::size_t> lines;
+  dispatch_sync(_terminalQueue, ^{  // the queue never waits on the main thread (see -setScrollbackLineLimit:)
+    if (_grid != NULL) {
+      lines = _grid->promptLines();
+    }
+  });
+  for (std::size_t line : lines) {
+    [result addObject:[NSNumber numberWithUnsignedInteger:line]];
+  }
+  return result;
+}
+
+- (NSDictionary *)lastFinishedCommand {
+  if (_grid == NULL) {
+    return nil;
+  }
+  __block BOOL found = NO;
+  __block cot::TerminalGrid::ShellCommand command;
+  dispatch_sync(_terminalQueue, ^{
+    if (_grid != NULL) {
+      found = _grid->lastFinishedCommand(&command);
+    }
+  });
+  return found ? COTCommandDictionary(command) : nil;
 }
 
 - (void)deliverBell {

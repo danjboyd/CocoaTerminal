@@ -138,6 +138,24 @@ public:
   bool findText(const std::string& needle, std::size_t fromLine, std::size_t fromColumn, bool backwards,
                 bool ignoreCase, TextMatch* out) const;
 
+  // Shell integration (OSC 133, as iTerm2, WezTerm and Windows Terminal read it): a shell that marks its prompt (A),
+  // the command line (B), the command's output (C) and the end of the command with its exit status (D;n) lets the
+  // terminal find prompts and a command's output. Marks on the alternate screen are ignored. Lines are numbered as in
+  // findText: the scrollback (oldest first), then the screen's rows.
+  struct ShellCommand {
+    std::string command;   // the text between B and C (what was typed), trailing spaces dropped
+    std::string output;    // the text between C and D, one '\n' between lines, trailing spaces dropped
+    int exitStatus = -1;   // D's status, or -1 if the shell didn't give one
+    std::size_t promptLine = 0;  // the line the command's prompt (A, or B without one) started on
+    std::size_t outputLine = 0;  // the line its output started on
+  };
+  using CommandFinishedCallback = std::function<void(const ShellCommand&)>;
+  void setCommandFinishedCallback(CommandFinishedCallback callback);
+  // The lines where prompts start, oldest first (only those still held).
+  std::vector<std::size_t> promptLines() const;
+  // The most recent command the shell marked as finished; false if none is held (or its output scrolled away).
+  bool lastFinishedCommand(ShellCommand* out) const;
+
   bool usingAlternateScreen() const { return usingAlternateScreen_; }
   bool hasUsedAlternateScreen() const { return hasUsedAlternateScreen_; }
   bool hasColorSpans() const { return hasColorSpans_; }
@@ -181,6 +199,26 @@ private:
   void onOutput(const char* s, std::size_t len);
   int onSelectionSet(int mask, const void* fragmentPtr);
   int onSelectionQuery(int mask);
+  int onOSC(int command, const void* fragmentPtr);
+  void onShellMark(const std::string& payload);
+
+  // A shell integration mark: where (an id that doesn't change as scrollback is dropped: lineBase_ plus the line's
+  // number), which mark, and D's exit status.
+  struct ShellMark {
+    std::uint64_t lineId = 0;
+    std::size_t column = 0;
+    char kind = 0;
+    int exitStatus = -1;
+  };
+  std::uint64_t cursorLineId() const { return lineBase_ + scrollback_.size() + cursorRow_; }
+  std::string textBetween(std::uint64_t fromId, std::size_t fromColumn, std::uint64_t toId, std::size_t toColumn) const;
+  void dropMarksBefore(std::uint64_t lineId);
+  bool buildCommand(std::size_t finishIndex, ShellCommand* out) const;
+  std::deque<ShellMark> marks_;
+  std::vector<ShellMark> finishedPending_;
+  std::uint64_t lineBase_ = 0;  // lines dropped from the front of the scrollback so far
+  std::string oscAccumulator_;
+  CommandFinishedCallback commandFinishedCallback_;
 
   void* vt_ = nullptr;
   void* screenPtr_ = nullptr;

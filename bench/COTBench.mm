@@ -39,19 +39,45 @@ static NSString *ShellPath(NSString *path) {
 static void Spin(NSTimeInterval seconds) {
   NSDate *until = [NSDate dateWithTimeIntervalSinceNow:seconds];
   while ([until timeIntervalSinceNow] > 0) {
-    NSEvent *event = [NSApp nextEventMatchingMask:NSAnyEventMask untilDate:[NSDate dateWithTimeIntervalSinceNow:0.005]
-                                           inMode:NSDefaultRunLoopMode dequeue:YES];
-    if (event != nil) [NSApp sendEvent:event];
+    // Each pass drains its own objects, as the app's event loop would; without this a run held tens of GB.
+    @autoreleasepool {
+      NSEvent *event = [NSApp nextEventMatchingMask:NSAnyEventMask untilDate:[NSDate dateWithTimeIntervalSinceNow:0.005]
+                                             inMode:NSDefaultRunLoopMode dequeue:YES];
+      if (event != nil) [NSApp sendEvent:event];
+    }
   }
 }
 
 static BOOL SpinUntil(NSTimeInterval timeout, BOOL (^done)(void)) {
   NSDate *until = [NSDate dateWithTimeIntervalSinceNow:timeout];
   while ([until timeIntervalSinceNow] > 0) {
-    if (done()) return YES;
+    @autoreleasepool {
+      if (done()) return YES;
+    }
     Spin(0.01);
   }
-  return done();
+  @autoreleasepool {
+    return done();
+  }
+}
+
+#if defined(_WIN32)
+extern "C" double COTBenchPrivateMegabytes(void);  // bench/COTBenchMemory.cpp
+#endif
+
+// The process's private bytes (resident on Linux), in MB: enough to see whether something grows frame by frame.
+static double PrivateMegabytes(void) {
+#if defined(_WIN32)
+  return COTBenchPrivateMegabytes();
+#else
+  FILE *f = fopen("/proc/self/statm", "r");
+  long pages = 0, resident = 0;
+  if (f) {
+    if (fscanf(f, "%ld %ld", &pages, &resident) != 2) resident = 0;
+    fclose(f);
+  }
+  return resident * 4096.0 / 1048576.0;
+#endif
 }
 
 static BOOL AnyLineContains(COTTerminalSession *session, NSString *needle) {
@@ -181,19 +207,29 @@ static std::string Log(double megabytes, const std::string &sentinel) {
   }
   Spin(0.5);
 
-  for (unsigned i = 0; i < 5; i++) [view display];  // warm the font and glyph caches
-  std::vector<double> times;
-  for (unsigned i = 0; i < _frames; i++) {
-    NSTimeInterval start = [NSDate timeIntervalSinceReferenceDate];
-    [view display];
-    times.push_back(([NSDate timeIntervalSinceReferenceDate] - start) * 1000.0);
+  for (unsigned i = 0; i < 5; i++) {  // warm the font and glyph caches
+    @autoreleasepool {
+      [view display];
+    }
   }
+  std::vector<double> times;
+  double memoryBefore = PrivateMegabytes();
+  for (unsigned i = 0; i < _frames; i++) {
+    @autoreleasepool {
+      NSTimeInterval start = [NSDate timeIntervalSinceReferenceDate];
+      [view display];
+      times.push_back(([NSDate timeIntervalSinceReferenceDate] - start) * 1000.0);
+    }
+  }
+  double memoryAfter = PrivateMegabytes();
   std::sort(times.begin(), times.end());
   double total = 0;
   for (double t : times) total += t;
   printf("render-%-8s %ux%u  frames=%u  mean=%.2f ms  median=%.2f ms  p95=%.2f ms  (%.0f fps)\n", [kind UTF8String],
          columns, rows, _frames, total / times.size(), times[times.size() / 2], times[(times.size() * 95) / 100],
          1000.0 / (total / times.size()));
+  printf("                   memory %.0f MB -> %.0f MB over %u frames (%.1f KB/frame)\n", memoryBefore, memoryAfter, _frames,
+         (memoryAfter - memoryBefore) * 1024.0 / _frames);
   fflush(stdout);
 
   [session terminate];

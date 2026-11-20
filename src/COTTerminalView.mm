@@ -497,15 +497,19 @@ static std::uint32_t COTRGB(NSColor *color) {
          (std::uint32_t)lround([rgb blueComponent] * 255);
 }
 
-// COCOATERMINAL_RENDERER=gl: the frame drawn by the OpenGL renderer and shown as an image. NO when it's off or can't
-// start (no OpenGL 3.3 with framebuffers, or not on Windows yet); drawRect: then draws with Cairo as before.
+// Whether OpenGL was asked for: the configuration's renderer, unless COCOATERMINAL_RENDERER says otherwise ("gl" or
+// "opengl", "cairo").
+- (BOOL)wantsOpenGL {
+  const char *choice = getenv("COCOATERMINAL_RENDERER");
+  if (choice != NULL && (strcmp(choice, "gl") == 0 || strcmp(choice, "opengl") == 0)) return YES;
+  if (choice != NULL && strcmp(choice, "cairo") == 0) return NO;
+  return [[_session configuration] renderer] == COTTerminalRendererOpenGL;
+}
+
+// The OpenGL renderer: the frame it draws, shown as an image. NO when OpenGL isn't wanted or can't start (no OpenGL
+// 3.3 with framebuffers, or a build without it); drawRect: then draws with Cairo.
 - (BOOL)drawWithOpenGL {
-  static int wanted = -1;
-  if (wanted < 0) {
-    const char *choice = getenv("COCOATERMINAL_RENDERER");
-    wanted = (choice != NULL && strcmp(choice, "gl") == 0) ? 1 : 0;
-  }
-  if (!wanted || _glUnavailable) {
+  if (_glUnavailable || ![self wantsOpenGL]) {
     return NO;
   }
   COTTerminalSnapshot *snapshot = [_session currentSnapshot];
@@ -1671,6 +1675,7 @@ static std::uint32_t COTRGB(NSColor *color) {
     [NSNumber numberWithUnsignedInteger:_perfDirtyRows], @"dirtyRows",
     [NSNumber numberWithUnsignedInteger:_perfFullRedraws], @"fullRedraws",
     [NSNumber numberWithDouble:(1.0 / COTTerminalRepaintInterval())], @"maxFPS",
+    ([self wantsOpenGL] && !_glUnavailable && _glRenderer != NULL) ? @"opengl" : @"cairo", @"renderer",
     nil];
 }
 

@@ -276,6 +276,19 @@ static NSColor *COTColorFromHexString(NSString *hex) {
     [theme setOpacity:value];
   }
 
+  // Not an Alacritty key: CocoaTerminal's own choice of drawing, "cairo" (the default) or "opengl".
+  NSString *backend = [config objectForKey:@"renderer.backend"];
+  if ([backend isKindOfClass:[NSString class]]) {
+    NSString *name = [backend lowercaseString];
+    if ([name isEqualToString:@"opengl"] || [name isEqualToString:@"gl"]) {
+      [terminalConfig setRenderer:COTTerminalRendererOpenGL];
+    } else if ([name isEqualToString:@"cairo"]) {
+      [terminalConfig setRenderer:COTTerminalRendererCairo];
+    } else {
+      NSLog(@"CocoaTerminal config: unknown renderer.backend \"%@\" (use \"cairo\" or \"opengl\")", backend);
+    }
+  }
+
   NSNumber *history = [config objectForKey:@"scrolling.history"];
   if ([history isKindOfClass:[NSNumber class]]) {
     NSInteger value = [history integerValue];

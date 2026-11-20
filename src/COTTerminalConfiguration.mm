@@ -44,6 +44,7 @@
     _scrollbackLineLimit = 10000;
     _keyboardCapturePolicy = COTKeyboardCapturePolicyTerminalDefault;
     _exitBehavior = COTTerminalExitBehaviorKeepOpen;
+    _renderer = COTTerminalRendererCairo;
   }
   return self;
 }
@@ -58,6 +59,7 @@
   copy.scrollbackLineLimit = self.scrollbackLineLimit;
   copy.keyboardCapturePolicy = self.keyboardCapturePolicy;
   copy.exitBehavior = self.exitBehavior;
+  copy.renderer = self.renderer;
   return copy;
 }
 
@@ -119,5 +121,6 @@
 @synthesize scrollbackLineLimit = _scrollbackLineLimit;
 @synthesize keyboardCapturePolicy = _keyboardCapturePolicy;
 @synthesize exitBehavior = _exitBehavior;
+@synthesize renderer = _renderer;
 
 @end

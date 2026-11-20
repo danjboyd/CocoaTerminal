@@ -19,6 +19,13 @@ typedef NS_ENUM(NSInteger, COTTerminalExitBehavior) {
   COTTerminalExitBehaviorTerminateApplication = 2,
 };
 
+// How the view draws: Cairo (GNUstep's own drawing) or OpenGL. OpenGL falls back to Cairo, saying why on stderr, when
+// the machine has no OpenGL 3.3. The COCOATERMINAL_RENDERER environment variable ("cairo" or "gl") overrides it.
+typedef NS_ENUM(NSInteger, COTTerminalRenderer) {
+  COTTerminalRendererCairo = 0,
+  COTTerminalRendererOpenGL = 1,
+};
+
 @interface COTTerminalConfiguration : NSObject <NSCopying>
 
 @property (nonatomic, copy) NSArray<NSString *> *shellCommand;
@@ -32,6 +39,7 @@ typedef NS_ENUM(NSInteger, COTTerminalExitBehavior) {
 @property (nonatomic) NSUInteger scrollbackLineLimit;
 @property (nonatomic) COTKeyboardCapturePolicy keyboardCapturePolicy;
 @property (nonatomic) COTTerminalExitBehavior exitBehavior;
+@property (nonatomic) COTTerminalRenderer renderer;
 
 + (instancetype)defaultConfiguration;
 

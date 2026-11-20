@@ -45,7 +45,8 @@ Differences from Linux worth knowing:
   `conpty.dll` sits next to the executable it's used instead of the built-in functions; it passes every sequence
   through as the program wrote it. `COCOATERMINAL_CONPTY=system` forces the built-in one, or set it to a
   `conpty.dll`'s full path.
-- `COCOATERMINAL_RENDERER=gl` draws with OpenGL instead of Cairo (experimental). It needs OpenGL 3.3 with framebuffer
+- A configuration's `renderer` (`COTTerminalRendererOpenGL`; in the demo's config, `[renderer] backend = "opengl"`)
+  draws with OpenGL instead of Cairo (experimental); `COCOATERMINAL_RENDERER=gl` or `=cairo` overrides it. It needs OpenGL 3.3 with framebuffer
   objects; without that (Windows' own software OpenGL is 1.1) the view draws with Cairo and says why on stderr. Glyphs
   come from DirectWrite (ClearType, or `COCOATERMINAL_GL_ANTIALIAS=grayscale`), or FreeType with
   `COCOATERMINAL_GL_GLYPHS=freetype`; colour emoji included. Box drawing and block elements are drawn as exact
@@ -92,6 +93,9 @@ opacity = 1.0
 
 [scrolling]
 history = 10000
+
+[renderer]
+backend = "cairo"   # or "opengl"; CocoaTerminal's own key
 ```
 
 `terminal.shell.program` / `terminal.shell.args` (newer Alacritty schema)

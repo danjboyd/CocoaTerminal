@@ -31,6 +31,7 @@ int main() {
   expect([theme cursorStyle] == COTTerminalCursorStyleBlock, "unexpected default cursor style");
   expect([[configuration terminalType] isEqualToString:@"xterm-256color"], "unexpected default terminal type");
   expect([configuration exitBehavior] == COTTerminalExitBehaviorKeepOpen, "unexpected default exit behavior");
+  expect([configuration renderer] == COTTerminalRendererCairo, "the renderer should default to Cairo");
   expect([[[configuration environment] objectForKey:@"TERM"] isEqualToString:@"xterm-256color"], "TERM should default to xterm-256color");
   expect([[[configuration environment] objectForKey:@"COLORTERM"] isEqualToString:@"truecolor"], "COLORTERM should default to truecolor");
   expect([theme backgroundColor] == [configuration backgroundColor], "background compatibility accessor is not theme-backed");
@@ -40,7 +41,9 @@ int main() {
   [configuration setBackgroundColor:customBackground];
   expect([[configuration theme] backgroundColor] == customBackground, "background setter did not update theme");
 
+  [configuration setRenderer:COTTerminalRendererOpenGL];
   COTTerminalConfiguration *copy = [configuration copy];
+  expect([copy renderer] == COTTerminalRendererOpenGL, "copied configuration did not preserve the renderer");
   expect([copy theme] != [configuration theme], "configuration copy should copy theme object");
   expect([[[copy theme] name] isEqualToString:[[configuration theme] name]], "copied theme did not preserve name");
   expect([copy exitBehavior] == [configuration exitBehavior], "copied configuration did not preserve exit behavior");

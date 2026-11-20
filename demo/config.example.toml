@@ -26,5 +26,9 @@ normal.family = "Intel One Mono"
 # [window]
 # opacity = 1.0
 
+# [renderer]
+# backend = "cairo"   # or "opengl": needs OpenGL 3.3, else it draws with cairo
+#                     # (CocoaTerminal's own key; Alacritty doesn't have it)
+
 # [scrolling]
 # history = 10000

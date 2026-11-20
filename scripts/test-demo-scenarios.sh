@@ -43,6 +43,9 @@ opacity = 0.85
 
 [scrolling]
 history = 4242
+
+[renderer]
+backend = "opengl"
 TOMLEOF
       COCOATERMINAL_CONFIG="$artifact_dir/config-toml.fixture.toml" \
         "$build_dir/CocoaTerminalDemo" \
@@ -200,6 +203,9 @@ TOMLEOF
       grep -q "^background_color=#101010" "$state_path"
       grep -q "^cursor_color=#FF00FF" "$state_path"
       grep -q "^opacity=0.85" "$state_path"
+      # Asked for OpenGL; what draws depends on the machine (Cairo when there's no OpenGL 3.3).
+      grep -q "^renderer_requested=opengl" "$state_path"
+      grep -Eq "^renderer=(opengl|cairo)$" "$state_path"
       ;;
   esac
 

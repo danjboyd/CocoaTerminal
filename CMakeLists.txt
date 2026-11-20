@@ -142,6 +142,11 @@ if(COCOATERMINAL_BUILD_TESTS)
   target_compile_features(CocoaTerminalCoreTests PRIVATE cxx_std_17)
   add_test(NAME CocoaTerminalCoreTests COMMAND CocoaTerminalCoreTests)
 
+  add_executable(CocoaTerminalGLRendererTests tests/COTGLRendererTests.cpp)
+  set_target_properties(CocoaTerminalGLRendererTests PROPERTIES LINKER_LANGUAGE OBJCXX)
+  target_link_libraries(CocoaTerminalGLRendererTests PRIVATE CocoaTerminal::CocoaTerminal)
+  add_test(NAME CocoaTerminalGLRendererTests COMMAND CocoaTerminalGLRendererTests)
+
   add_executable(CocoaTerminalThemeTests tests/COTTerminalThemeTests.mm)
   set_target_properties(CocoaTerminalThemeTests PROPERTIES LINKER_LANGUAGE OBJCXX)
   target_link_libraries(CocoaTerminalThemeTests PRIVATE CocoaTerminal::CocoaTerminal)

@@ -45,10 +45,14 @@ Differences from Linux worth knowing:
   `conpty.dll` sits next to the executable it's used instead of the built-in functions; it passes every sequence
   through as the program wrote it. `COCOATERMINAL_CONPTY=system` forces the built-in one, or set it to a
   `conpty.dll`'s full path.
-- `COCOATERMINAL_RENDERER=gl` draws with OpenGL instead of Cairo (Windows only, experimental). It needs OpenGL 3.3
-  with framebuffer objects; without that (Windows' own software OpenGL is 1.1) the view draws with Cairo and says why
-  on stderr. Glyphs come from DirectWrite (ClearType, or `COCOATERMINAL_GL_ANTIALIAS=grayscale`), colour emoji
-  included; box drawing and block elements are drawn as exact rectangles so they join. The frame is rendered off
+- `COCOATERMINAL_RENDERER=gl` draws with OpenGL instead of Cairo (experimental). It needs OpenGL 3.3 with framebuffer
+  objects; without that (Windows' own software OpenGL is 1.1) the view draws with Cairo and says why on stderr. Glyphs
+  come from DirectWrite (ClearType, or `COCOATERMINAL_GL_ANTIALIAS=grayscale`), or FreeType with
+  `COCOATERMINAL_GL_GLYPHS=freetype`; colour emoji included. Box drawing and block elements are drawn as exact
+  rectangles so they join. Built on Windows by default (CMake `COCOATERMINAL_GL_RENDERER`); on Linux it's off until
+  its EGL context has been tried there, and needs `egl`, `freetype2` and `fontconfig`. To try it on a machine with no
+  OpenGL 3.3, put Mesa's `opengl32.dll` (with `libgallium_wgl.dll` and its LLVM) beside the program and set
+  `GALLIUM_DRIVER=llvmpipe`. The frame is rendered off
   screen and drawn as an image: GNUstep's `NSOpenGLView` is a child window on Windows that ignores hiding, clipping and
   views drawn over it (`bench/COTGLCheck.mm`). `COCOATERMINAL_GL_CONTRAST` and `COCOATERMINAL_GL_GAMMA` tune text
   weight; `COCOATERMINAL_PERF_LOG=1` prints per-frame timings.

@@ -6,6 +6,7 @@
 #import "COTConfigLoader.h"
 
 #include <math.h>
+#include <stdio.h>
 
 static NSString *const COTScenarioDefault = @"smoke";
 static NSString *const COTScenarioSentinelPrefix = @"COT_SCENARIO_DONE:";
@@ -567,6 +568,16 @@ static NSString *COTPythonScenarioScript(NSString *body) {
     NSLog(@"Failed to start terminal: %@", error);
     exit(2);
   }
+
+  // Which renderer draws, decided at the view's first draw: one line on stderr.
+  [_window display];
+  NSDictionary *performance = [_terminalView performanceSnapshot];
+  const char *rendererOverride = getenv("COCOATERMINAL_RENDERER");
+  fprintf(stderr, "[CocoaTerminalDemo] renderer: %s (configured %s%s%s; OpenGL presentation: %s)\n",
+          [[performance objectForKey:@"renderer"] UTF8String],
+          [[[_terminalView session] configuration] renderer] == COTTerminalRendererOpenGL ? "opengl" : "cairo",
+          rendererOverride != NULL ? ", COCOATERMINAL_RENDERER=" : "", rendererOverride != NULL ? rendererOverride : "",
+          [[performance objectForKey:@"glPresentation"] UTF8String]);
 
   if ([_options selfTest]) {
     _scenarioStart = [[NSDate date] retain];

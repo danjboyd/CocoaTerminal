@@ -170,7 +170,6 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
 @end
 
 #if !defined(_WIN32)
-static char COTTerminalOwnerKey;
 @interface COTWriterTarget : NSObject
 @property(nonatomic, assign) COTTerminalSession *session;
 @end

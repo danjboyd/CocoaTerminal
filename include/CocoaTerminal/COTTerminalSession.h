@@ -73,6 +73,7 @@ typedef NS_ENUM(NSInteger, COTTerminalEnqueueResult) {
 // the transport. isRunning becomes NO immediately; the child stays owned and is
 // reaped in the background, and didExitWithStatus: still follows when it is.
 // isCleanupComplete says when the fd is closed and the child reaped.
+// On Windows -terminate ends the ConPTY process itself and reports no exit.
 - (void)terminate;
 // Compatibility: read what is ready and reap once, through the single reader.
 // Synchronous on the terminal queue; never call it from that queue (from a

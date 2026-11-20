@@ -137,7 +137,13 @@ int main() {
     [session terminate];
     expect(![session isRunning], "a terminated session isn't running");
     runUntil(0.5, ^BOOL { return NO; });
-    expect([recorder exits] == 0, "terminate shouldn't report an exit");
+#if defined(_WIN32)
+    expect([recorder exits] == 0, "terminate shouldn't report an exit (Windows ends the ConPTY process itself)");
+#else
+    // Unix: the child is HUP'd and reaped in the background, and its exit still arrives, once (see -terminate).
+    runUntil(3, ^BOOL { return [recorder exits] > 0; });
+    expect([recorder exits] <= 1, "a terminated shell's exit arrives at most once");
+#endif
     [session setDelegate:nil];
     [session release];
     [recorder release];

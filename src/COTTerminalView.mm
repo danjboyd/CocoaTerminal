@@ -628,13 +628,26 @@ static std::uint32_t COTRGB(NSColor *color) {
          (std::uint32_t)lround([rgb blueComponent] * 255);
 }
 
-// Whether OpenGL was asked for: the configuration's renderer, unless COCOATERMINAL_RENDERER says otherwise ("gl" or
-// "opengl", "cairo").
+// Whether to draw with OpenGL: the configuration's renderer, unless COCOATERMINAL_RENDERER says otherwise ("gl" or
+// "opengl", "cairo", "auto"). Automatic means OpenGL only where it draws straight into the window (see
+// COTTerminalRenderer): through an image it's slower than Cairo on plain text (T14, Intel iris: 5.7 ms a frame
+// against 2.5; colour-heavy screens 5.7 against 120).
 - (BOOL)wantsOpenGL {
   const char *choice = getenv("COCOATERMINAL_RENDERER");
-  if (choice != NULL && (strcmp(choice, "gl") == 0 || strcmp(choice, "opengl") == 0)) return YES;
-  if (choice != NULL && strcmp(choice, "cairo") == 0) return NO;
-  return [[_session configuration] renderer] == COTTerminalRendererOpenGL;
+  COTTerminalRenderer renderer = [[_session configuration] renderer];
+  if (choice != NULL && (strcmp(choice, "gl") == 0 || strcmp(choice, "opengl") == 0)) renderer = COTTerminalRendererOpenGL;
+  if (choice != NULL && strcmp(choice, "cairo") == 0) renderer = COTTerminalRendererCairo;
+  if (choice != NULL && (strcmp(choice, "auto") == 0 || strcmp(choice, "automatic") == 0)) {
+    renderer = COTTerminalRendererAutomatic;
+  }
+  if (renderer == COTTerminalRendererAutomatic) {
+#if defined(COCOATERMINAL_GL_RENDERER)
+    return COTGLSurfaceUsable() && [[[_session configuration] theme] opacity] >= 1.0;
+#else
+    return NO;
+#endif
+  }
+  return renderer == COTTerminalRendererOpenGL;
 }
 
 // The renderer for the theme's font, living in the given OpenGL context (an NSOpenGLView's, current now), or in its

@@ -48,7 +48,7 @@
     _initialRows = 24;
     _keyboardCapturePolicy = COTKeyboardCapturePolicyTerminalDefault;
     _exitBehavior = COTTerminalExitBehaviorKeepOpen;
-    _renderer = COTTerminalRendererCairo;
+    _renderer = COTTerminalRendererAutomatic;
   }
   return self;
 }

@@ -46,7 +46,10 @@ Differences from Linux worth knowing:
   through as the program wrote it. `COCOATERMINAL_CONPTY=system` forces the built-in one, or set it to a
   `conpty.dll`'s full path.
 - A configuration's `renderer` (`COTTerminalRendererOpenGL`; in the demo's config, `[renderer] backend = "opengl"`)
-  draws with OpenGL instead of Cairo (experimental); `COCOATERMINAL_RENDERER=gl` or `=cairo` overrides it. It needs OpenGL 3.3 with framebuffer
+  draws with OpenGL instead of Cairo; `COCOATERMINAL_RENDERER=gl`, `=cairo` or `=auto` overrides it. The default,
+  `COTTerminalRendererAutomatic` (`"auto"`), uses OpenGL only where it draws straight into the window (below) with an
+  opaque theme, and Cairo otherwise: drawn through an image, OpenGL took about 5.7 ms a frame whatever the screen
+  held on a laptop's Intel GPU, against Cairo's 2.5 ms for plain text and 120 ms for a colour-heavy screen. It needs OpenGL 3.3 with framebuffer
   objects; without that (Windows' own software OpenGL is 1.1) the view draws with Cairo and says why on stderr. Glyphs
   come from DirectWrite (ClearType, or `COCOATERMINAL_GL_ANTIALIAS=grayscale`), or FreeType with
   `COCOATERMINAL_GL_GLYPHS=freetype`; colour emoji included. Elsewhere glyphs come from FreeType in grayscale, as Cairo
@@ -131,7 +134,7 @@ opacity = 1.0
 history = 10000
 
 [renderer]
-backend = "cairo"   # or "opengl"; CocoaTerminal's own key
+backend = "auto"    # or "cairo" or "opengl"; CocoaTerminal's own key
 ```
 
 `terminal.shell.program` / `terminal.shell.args` (newer Alacritty schema)

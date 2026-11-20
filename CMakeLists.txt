@@ -214,6 +214,11 @@ if(COCOATERMINAL_BUILD_TESTS)
   endif()
   add_test(NAME CocoaTerminalKeyboardLayoutTests COMMAND CocoaTerminalKeyboardLayoutTests)
 
+  add_executable(CocoaTerminalRendererChoiceTests tests/COTRendererChoiceTests.mm)
+  set_target_properties(CocoaTerminalRendererChoiceTests PROPERTIES LINKER_LANGUAGE OBJCXX)
+  target_link_libraries(CocoaTerminalRendererChoiceTests PRIVATE CocoaTerminal::CocoaTerminal)
+  add_test(NAME CocoaTerminalRendererChoiceTests COMMAND CocoaTerminalRendererChoiceTests)
+
   add_executable(CocoaTerminalCaptureTests tests/COTTerminalCaptureTests.mm)
   set_target_properties(CocoaTerminalCaptureTests PROPERTIES LINKER_LANGUAGE OBJCXX)
   target_link_libraries(CocoaTerminalCaptureTests PRIVATE CocoaTerminal::CocoaTerminal)

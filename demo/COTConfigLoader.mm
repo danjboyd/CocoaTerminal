@@ -276,7 +276,7 @@ static NSColor *COTColorFromHexString(NSString *hex) {
     [theme setOpacity:value];
   }
 
-  // Not an Alacritty key: CocoaTerminal's own choice of drawing, "cairo" (the default) or "opengl".
+  // Not an Alacritty key: CocoaTerminal's own choice of drawing, "auto" (the default), "cairo" or "opengl".
   NSString *backend = [config objectForKey:@"renderer.backend"];
   if ([backend isKindOfClass:[NSString class]]) {
     NSString *name = [backend lowercaseString];
@@ -284,8 +284,10 @@ static NSColor *COTColorFromHexString(NSString *hex) {
       [terminalConfig setRenderer:COTTerminalRendererOpenGL];
     } else if ([name isEqualToString:@"cairo"]) {
       [terminalConfig setRenderer:COTTerminalRendererCairo];
+    } else if ([name isEqualToString:@"auto"] || [name isEqualToString:@"automatic"]) {
+      [terminalConfig setRenderer:COTTerminalRendererAutomatic];
     } else {
-      NSLog(@"CocoaTerminal config: unknown renderer.backend \"%@\" (use \"cairo\" or \"opengl\")", backend);
+      NSLog(@"CocoaTerminal config: unknown renderer.backend \"%@\" (use \"auto\", \"cairo\" or \"opengl\")", backend);
     }
   }
 

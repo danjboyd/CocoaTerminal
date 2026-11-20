@@ -165,6 +165,48 @@ int main() {
   trimGrid.setScrollbackLimit(50);
   expect(trimGrid.scrollbackLineCount() == 3, "raising the limit keeps what's there");
 
+  // Shell integration (OSC 133): prompts, and the last command's text, output and exit status.
+  {
+    cot::TerminalGrid shellGrid(30, 4);
+    shellGrid.setScrollbackLimit(100);
+    std::vector<cot::TerminalGrid::ShellCommand> finished;
+    shellGrid.setCommandFinishedCallback([&](const cot::TerminalGrid::ShellCommand &c) { finished.push_back(c); });
+    // Prompt "$ ", command "ls", output two lines, status 0; then "false" with no output, status 1; then a prompt.
+    const char *session =
+        "\033]133;A\007$ \033]133;B\007ls\r\n\033]133;C\007a.txt\r\nb.txt\r\n\033]133;D;0\007"
+        "\033]133;A\033\\$ \033]133;B\033\\false\r\n\033]133;C\033\\\033]133;D;1\033\\"
+        "\033]133;A\007$ \033]133;B\007";
+    shellGrid.ingest(session, std::char_traits<char>::length(session));
+    // Lines: 0 "$ ls", 1 "a.txt", 2 "b.txt", 3 "$ false", 4 "$ " (one line in the scrollback: 4 rows).
+    std::vector<std::size_t> prompts = shellGrid.promptLines();
+    expect(prompts.size() == 3 && prompts[0] == 0 && prompts[1] == 3 && prompts[2] == 4, "three prompts, at lines 0, 3, 4");
+    expect(finished.size() == 2, "two commands finished, reported as they did");
+    expect(finished.size() == 2 && finished[0].command == "ls" && finished[0].output == "a.txt\nb.txt" &&
+               finished[0].exitStatus == 0 && finished[0].promptLine == 0 && finished[0].outputLine == 1,
+           "ls: its command line, two lines of output and status 0");
+    cot::TerminalGrid::ShellCommand last;
+    expect(shellGrid.lastFinishedCommand(&last) && last.command == "false" && last.output.empty() &&
+               last.exitStatus == 1 && last.promptLine == 3,
+           "the last finished command: false, no output, status 1 (ST-terminated marks)");
+    // Dropping the scrollback's one line ("$ ls") drops its prompt; the others are renumbered and still right.
+    shellGrid.setScrollbackLimit(0);
+    prompts = shellGrid.promptLines();
+    expect(prompts.size() == 2 && prompts[0] == 2 && prompts[1] == 3,
+           "trimming the scrollback drops the first prompt and renumbers the others");
+    expect(shellGrid.lastFinishedCommand(&last) && last.command == "false" && last.promptLine == 2,
+           "the last command still found after trimming");
+    // Marks on the alternate screen (a full-screen program printing them) are ignored.
+    const char *alternate = "\033[?1049h\033]133;A\007x\033[?1049l";
+    shellGrid.ingest(alternate, std::char_traits<char>::length(alternate));
+    expect(shellGrid.promptLines().size() == 2, "no prompt from the alternate screen");
+    // A D with no exit status.
+    cot::TerminalGrid plain(20, 3);
+    const char *noStatus = "\033]133;C\007out\r\n\033]133;D\007";
+    plain.ingest(noStatus, std::char_traits<char>::length(noStatus));
+    expect(plain.lastFinishedCommand(&last) && last.output == "out" && last.exitStatus == -1 && last.command.empty(),
+           "a D without a status gives -1, and no B no command text");
+  }
+
   // SGR 2 (faint) survives libvterm as alternate font 1; 22 ends it; 8 hides; colour sub-parameters pass untouched.
   expect(cot::FaintRewriter::rewriteParameters("2") == "11", "2 -> 11");
   expect(cot::FaintRewriter::rewriteParameters("1;2;31") == "1;11;31", "1;2;31 -> 1;11;31");

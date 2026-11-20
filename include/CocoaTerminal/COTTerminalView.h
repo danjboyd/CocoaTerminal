@@ -35,6 +35,12 @@ extern NSString *const COTTerminalExitStatusUserInfoKey;
 - (void)selectAll;
 - (NSDictionary *)performanceSnapshot;
 
+/// Shell integration (OSC 133, see COTTerminalSession): scrolls so the previous (older) or next prompt is at the top of
+/// the view; past the last prompt, -scrollToNextPrompt returns to the live screen. NO if there's no prompt that way.
+/// Cmd+Shift+Up and Down (Ctrl+Shift on GNUstep) do the same.
+- (BOOL)scrollToPreviousPrompt;
+- (BOOL)scrollToNextPrompt;
+
 @end
 
 NS_ASSUME_NONNULL_END

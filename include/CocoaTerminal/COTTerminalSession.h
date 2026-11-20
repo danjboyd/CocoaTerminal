@@ -8,9 +8,23 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+/// Shell integration: a shell that marks its prompts and commands with OSC 133 (A prompt, B command line, C output,
+/// D;status finished) lets the session find prompts and each command's output. A finished command is a dictionary
+/// with these keys: the command line as typed, its output (lines joined with "\n"), its exit status (an NSNumber, -1
+/// if the shell gave none), and the lines its prompt and output start on (the scrollback's oldest line is 0, the
+/// screen's rows follow it). See README.md for the few lines a bash or zsh prompt needs.
+extern NSString *const COTTerminalSessionCommandDidFinishNotification;  // userInfo: the finished command
+extern NSString *const COTTerminalCommandTextKey;
+extern NSString *const COTTerminalCommandOutputKey;
+extern NSString *const COTTerminalCommandExitStatusKey;
+extern NSString *const COTTerminalCommandPromptLineKey;
+extern NSString *const COTTerminalCommandOutputLineKey;
+
 @protocol COTTerminalDelegate <NSObject>
 @optional
 - (void)terminalSessionDidUpdateScreen:(COTTerminalSession *)session;
+/// A command the shell marked as finished (OSC 133 D), on the main thread.
+- (void)terminalSession:(COTTerminalSession *)session didFinishCommand:(NSDictionary *)command;
 - (void)terminalSession:(COTTerminalSession *)session didExitWithStatus:(int)status;
 - (void)terminalSessionDidRequestBell:(COTTerminalSession *)session;
 - (void)terminalSession:(COTTerminalSession *)session didChangeTitle:(NSString *)title;
@@ -51,6 +65,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setViewportOffset:(NSUInteger)offset;
 - (void)adjustViewportOffset:(NSInteger)delta;
 - (void)scrollToBottom;
+/// Shell integration (OSC 133): the lines prompts start on, oldest first, numbered with the scrollback first; and the
+/// most recent finished command (see COTTerminalCommandTextKey and the other keys), or nil.
+- (NSArray<NSNumber *> *)promptLines;
+- (nullable NSDictionary *)lastFinishedCommand;
 - (BOOL)isUsingAlternateScreen;
 - (BOOL)hasUsedAlternateScreen;
 - (BOOL)hasColorSpans;

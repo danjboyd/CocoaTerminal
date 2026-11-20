@@ -12,6 +12,8 @@
 
 #if defined(_WIN32)
 #include "COTConPTY.h"
+#include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -152,6 +154,15 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
   NSUInteger _perfFullRedraws;
 }
 @end
+
+#if defined(_WIN32)
+// Output the ConPTY reader has read and the terminal queue hasn't parsed yet.
+struct COTOutputBatch {
+  std::mutex mutex;
+  std::string pending;
+  bool drainScheduled = false;
+};
+#endif
 
 @implementation COTTerminalSession
 
@@ -558,15 +569,36 @@ extern "C" void _dispatch_main_queue_callback_4CF(void *message);
   COTSessionHandle *handle = _handle;
   dispatch_queue_t terminalQueue = _terminalQueue;
   cot::ConPTYProcess::Callbacks callbacks;
-  callbacks.output = [rawSelf, terminalQueue](const char *bytes, std::size_t length) {
+  // ConPTY hands over output about 90 bytes at a time, and parsing costs mostly per call (1 MB parses in 2.5 s in
+  // 96-byte pieces, 0.2 s in 4 KB ones). So the reader appends to a buffer, and one block on the terminal queue takes
+  // everything that has arrived by the time it runs: under load the pieces grow by themselves.
+  auto batch = std::make_shared<COTOutputBatch>();
+  callbacks.output = [rawSelf, terminalQueue, batch](const char *bytes, std::size_t length) {
+    bool schedule = false;
+    {
+      std::lock_guard<std::mutex> lock(batch->mutex);
+      batch->pending.append(bytes, length);
+      schedule = !batch->drainScheduled;
+      batch->drainScheduled = true;
+    }
+    if (!schedule) {
+      return;
+    }
     @autoreleasepool {
-      NSData *data = [[NSData alloc] initWithBytes:bytes length:(NSUInteger)length];
+      std::shared_ptr<COTOutputBatch> owned = batch;
       dispatch_async(terminalQueue, ^{
         @autoreleasepool {  // see -performGridMutation:notify:
+          std::string chunk;
+          {
+            std::lock_guard<std::mutex> lock(owned->mutex);
+            chunk.swap(owned->pending);
+            owned->drainScheduled = false;
+          }
+          NSData *data = [[NSData alloc] initWithBytesNoCopy:(void *)chunk.data() length:chunk.size() freeWhenDone:NO];
           [(COTTerminalSession *)rawSelf ingestOwnedData:data];
+          [data release];
         }
       });
-      [data release];  // the block keeps its own
     }
   };
   callbacks.exited = [handle](std::uint32_t exitCode) {

@@ -49,6 +49,9 @@ public:
   // The command line CreateProcess gets for argv: each argument quoted the way CommandLineToArgvW reads it back.
   static std::wstring commandLine(const std::vector<std::string> &argv);
 
+  // Which pseudo console this process uses: "system", or "bundled " and the conpty.dll's path.
+  static std::string implementation();
+
   ConPTYProcess(const ConPTYProcess &) = delete;
   ConPTYProcess &operator=(const ConPTYProcess &) = delete;
 

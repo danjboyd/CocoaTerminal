@@ -15,6 +15,8 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <atomic>
 #include <mutex>
 #include <thread>
@@ -92,7 +94,69 @@ std::wstring EnvironmentBlock(const std::vector<std::pair<std::string, std::stri
   return block;
 }
 
+// The pseudo console functions: Microsoft's own conpty.dll when it sits next to the program (it starts the
+// OpenConsole.exe beside it, the console Windows Terminal ships), else the ones built into Windows. The bundled one
+// is newer than what older Windows has, and the same on every machine. COCOATERMINAL_CONPTY overrides: "system" for
+// the built-in ones, or the full path of a conpty.dll.
+struct PseudoConsoleAPI {
+  HRESULT(WINAPI *create)(COORD, HANDLE, HANDLE, DWORD, HPCON *) = CreatePseudoConsole;
+  HRESULT(WINAPI *resize)(HPCON, COORD) = ResizePseudoConsole;
+  void(WINAPI *close)(HPCON) = ClosePseudoConsole;
+  std::string description = "system";
+};
+
+const PseudoConsoleAPI &PseudoConsole() {
+  static PseudoConsoleAPI api;
+  static std::once_flag once;
+  std::call_once(once, [] {
+    std::wstring path;
+    const char *override_ = getenv("COCOATERMINAL_CONPTY");
+    if (override_ != NULL && *override_ != '\0') {
+      if (strcmp(override_, "system") == 0) {
+        return;
+      }
+      path = Widen(override_);
+    } else {
+      wchar_t exe[MAX_PATH];
+      DWORD length = GetModuleFileNameW(NULL, exe, MAX_PATH);
+      if (length == 0 || length >= MAX_PATH) {
+        return;
+      }
+      path.assign(exe, length);
+      std::size_t slash = path.find_last_of(L"\\/");
+      path = (slash == std::wstring::npos ? std::wstring() : path.substr(0, slash + 1)) + L"conpty.dll";
+      if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        return;
+      }
+    }
+    // A full path, and its own folder searched for what it loads: never a conpty.dll found elsewhere.
+    HMODULE module = LoadLibraryExW(path.c_str(), NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (module == NULL) {
+      return;
+    }
+    auto create = reinterpret_cast<decltype(api.create)>(GetProcAddress(module, "ConptyCreatePseudoConsole"));
+    auto resize = reinterpret_cast<decltype(api.resize)>(GetProcAddress(module, "ConptyResizePseudoConsole"));
+    auto close = reinterpret_cast<decltype(api.close)>(GetProcAddress(module, "ConptyClosePseudoConsole"));
+    if (create == NULL || resize == NULL || close == NULL) {
+      FreeLibrary(module);
+      return;
+    }
+    api.create = create;
+    api.resize = resize;
+    api.close = close;
+    int count = WideCharToMultiByte(CP_UTF8, 0, path.c_str(), (int)path.size(), NULL, 0, NULL, NULL);
+    std::string narrow((std::size_t)count, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, path.c_str(), (int)path.size(), &narrow[0], count, NULL, NULL);
+    api.description = "bundled " + narrow;
+  });
+  return api;
+}
+
 }  // namespace
+
+std::string ConPTYProcess::implementation() {
+  return PseudoConsole().description;
+}
 
 struct ConPTYProcess::State {
   HPCON console = NULL;
@@ -111,7 +175,7 @@ struct ConPTYProcess::State {
   void closeConsole() {
     std::lock_guard<std::mutex> lock(consoleMutex);
     if (console != NULL) {
-      ClosePseudoConsole(console);
+      PseudoConsole().close(console);
       console = NULL;
     }
   }
@@ -211,7 +275,7 @@ std::unique_ptr<ConPTYProcess> ConPTYProcess::spawn(const std::vector<std::strin
   COORD size;
   size.X = (SHORT)std::max(1u, std::min(columns, 32767u));
   size.Y = (SHORT)std::max(1u, std::min(rows, 32767u));
-  HRESULT result = CreatePseudoConsole(size, consoleInput, consoleOutput, 0, &state->console);
+  HRESULT result = PseudoConsole().create(size, consoleInput, consoleOutput, 0, &state->console);
   // The console holds its own references to its ends of the pipes.
   CloseHandle(consoleInput);
   CloseHandle(consoleOutput);
@@ -237,7 +301,7 @@ std::unique_ptr<ConPTYProcess> ConPTYProcess::spawn(const std::vector<std::strin
       !UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, state->console,
                                  sizeof(state->console), NULL, NULL)) {
     DWORD code = GetLastError();
-    ClosePseudoConsole(state->console);
+    PseudoConsole().close(state->console);
     CloseHandle(state->input);
     CloseHandle(state->output);
     return fail(LastErrorMessage("UpdateProcThreadAttribute", code));
@@ -255,7 +319,7 @@ std::unique_ptr<ConPTYProcess> ConPTYProcess::spawn(const std::vector<std::strin
   DWORD createError = GetLastError();
   DeleteProcThreadAttributeList(startup.lpAttributeList);
   if (!created) {
-    ClosePseudoConsole(state->console);
+    PseudoConsole().close(state->console);
     CloseHandle(state->input);
     CloseHandle(state->output);
     return fail(LastErrorMessage(("Starting " + argv[0]).c_str(), createError));
@@ -300,7 +364,7 @@ void ConPTYProcess::resize(unsigned columns, unsigned rows) {
   COORD size;
   size.X = (SHORT)std::max(1u, std::min(columns, 32767u));
   size.Y = (SHORT)std::max(1u, std::min(rows, 32767u));
-  ResizePseudoConsole(_state->console, size);
+  PseudoConsole().resize(_state->console, size);
 }
 
 void ConPTYProcess::terminate() {

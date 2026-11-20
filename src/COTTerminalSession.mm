@@ -573,16 +573,17 @@ struct COTOutputBatch {
 - (void)recordTransportError:(NSString *)message {
   if ((_transportError == nil && message == nil) || [_transportError isEqual:message]) return;
   [_transportError release]; _transportError = [message copy];
-  COTTerminalSession *session = [self retain];
+  // Through the session's handle, never a retain of self: this runs on the terminal queue, where -dealloc's own
+  // teardown can reach it, and a retain of a session being freed outlived it (see -deliverOnMain:).
   NSString *owned = [message copy];
-  dispatch_async(dispatch_get_main_queue(), ^{
+  [self deliverOnMain:^(COTTerminalSession *session) {
     id<COTTerminalDelegate> delegate = [session delegate];
     if (owned && [delegate respondsToSelector:@selector(terminalSession:didEncounterTransportError:)])
       [delegate terminalSession:session didEncounterTransportError:owned];
     if ([delegate respondsToSelector:@selector(terminalSessionDidUpdateScreen:)])
       [delegate terminalSessionDidUpdateScreen:session];
-    [owned release]; [session release];
-  });
+  }];
+  [owned release];
 }
 
 #if !defined(_WIN32)
@@ -664,24 +665,21 @@ struct COTOutputBatch {
     [self flushPendingOutputPublish];
   }
   _running = NO;
-  COTTerminalSession *session = [self retain];
-  dispatch_async(dispatch_get_main_queue(), ^{
+  // Through the handle (see -recordTransportError:): the reaper can fire while the session is being freed.
+  [self deliverOnMain:^(COTTerminalSession *session) {
     id<COTTerminalDelegate> delegate = [session delegate];
     if ([delegate respondsToSelector:@selector(terminalSession:didExitWithStatus:)])
       [delegate terminalSession:session didExitWithStatus:status];
-    [session release];
-  });
+  }];
 }
 - (void)lifecycleLostChild:(int)errorNumber {
   _running = NO;
   [self recordTransportError:[NSString stringWithFormat:@"Child exit status unavailable: %s", strerror(errorNumber)]];
-  COTTerminalSession *session = [self retain];
-  dispatch_async(dispatch_get_main_queue(), ^{
+  [self deliverOnMain:^(COTTerminalSession *session) {
     id<COTTerminalDelegate> delegate = [session delegate];
     if ([delegate respondsToSelector:@selector(terminalSession:didLoseChildWithError:)])
       [delegate terminalSession:session didLoseChildWithError:errorNumber];
-    [session release];
-  });
+  }];
 }
 - (cot::SessionLifecycle::Adapter)lifecycleAdapter:(COTLifecycleNative *)native {
   // `native` owns the core that owns these closures, so a raw pointer is safe.

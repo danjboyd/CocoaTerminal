@@ -47,6 +47,7 @@ class SpawnPlan {
   std::string problem_, executable_, cwd_;
   std::vector<std::string> argv_, env_;
   std::vector<char *> argvPtrs_, envPtrs_;
+  int maxDescriptor_ = 1024;  // the child marks 3..maxDescriptor_-1 close-on-exec without close_range
 };
 
 // The parent side of the startup pipe. Launched: EOF with no record (execve

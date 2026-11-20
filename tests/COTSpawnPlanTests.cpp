@@ -157,6 +157,22 @@ int main() {
     close(p[0]); close(p[1]);
   }
 
+  // 7. Only 0-2 reach the program: a descriptor the parent holds without close-on-exec (another session's pty master,
+  //    a host pipe) is closed by the exec.
+  {
+    int leaky = open("/dev/null", O_RDONLY);  // no O_CLOEXEC
+    int high = leaky >= 0 ? fcntl(leaky, F_DUPFD, 37) : -1;
+    EXPECT(high >= 37 && !(fcntl(high, F_GETFD) & FD_CLOEXEC), "an inheritable descriptor to test with");
+    std::string script = "if [ -e /dev/fd/" + std::to_string(high) + " ]; then exit 9; fi; exit 0";
+    SpawnPlan plan = SpawnPlan::Make({"/bin/sh", "-c", script}, {}, {}, "");
+    Run run = Spawn(plan);
+    EXPECT(run.read == SpawnRead::Launched && WIFEXITED(run.status) && WEXITSTATUS(run.status) == 0,
+           "the child doesn't inherit the parent's other descriptors: " << run.status);
+    EXPECT(fcntl(high, F_GETFD) >= 0, "the parent's own descriptor is untouched");
+    if (high >= 0) close(high);
+    if (leaky >= 0) close(leaky);
+  }
+
   unlink((dir + "/cot-probe-685").c_str()); unlink((dir + "/not-exec").c_str());
   unlink((dir + "/goes-away").c_str()); rmdir(dir.c_str());
   alarm(0);

@@ -3,9 +3,13 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#endif
 
 namespace cot {
 namespace {
@@ -35,6 +39,10 @@ SpawnPlan SpawnPlan::Make(const std::vector<std::string> &command,
                           const std::vector<std::pair<std::string, std::string>> &overrides,
                           const std::string &workingDirectory) {
   SpawnPlan plan;
+  // How far the child marks descriptors close-on-exec when close_range is missing: known before fork, as sysconf may
+  // not be async-signal-safe.
+  long openMax = sysconf(_SC_OPEN_MAX);
+  plan.maxDescriptor_ = openMax > 0 && openMax < 65536 ? (int)openMax : 65536;
   if (command.empty() || command[0].empty()) {
     plan.problem_ = "The terminal command is empty.";
     return plan;
@@ -107,6 +115,18 @@ void SpawnPlan::freeze() {
 
 void SpawnPlan::execInChild(int errorFd) const noexcept {
   // Async-signal-safe only from here: no allocation, no locks, no Objective-C.
+  // Nothing of the host's but the terminal (0-2) reaches the program: every other descriptor (another session's pty
+  // master, the host's pipes) is marked close-on-exec. errorFd already is, and stays usable if execve fails.
+  bool marked = false;
+#if defined(__linux__) && defined(SYS_close_range)
+  marked = syscall(SYS_close_range, 3u, ~0u, 4u /* CLOSE_RANGE_CLOEXEC */) == 0;
+#endif
+  if (!marked) {
+    for (int fd = 3; fd < maxDescriptor_; ++fd) {
+      int flags = fcntl(fd, F_GETFD);
+      if (flags >= 0 && !(flags & FD_CLOEXEC)) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+    }
+  }
   SpawnFailure failure{0, 0};
   if (!cwd_.empty() && chdir(cwd_.c_str()) != 0) {
     failure = {SpawnStageChdir, errno};

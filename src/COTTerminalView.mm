@@ -11,6 +11,7 @@
 
 #include <unordered_map>
 
+#include "COTCairoCells.h"
 #include "COTGLRenderer.h"
 
 static NSString *const COTTerminalViewErrorDomain = @"COTTerminalViewErrorDomain";
@@ -1035,18 +1036,40 @@ static std::uint32_t COTRGB(NSColor *color) {
         inSelection = (rowIndex >= selStartRow && rowIndex <= selEndRow &&
                        columnIndex >= firstColInRow && columnIndex < lastColInRow);
       }
+      // Backgrounds on whole pixels, as the OpenGL renderer's: neighbouring cells meet without a seam.
+      NSRect cellRect = NSMakeRect(x, y, cellRectWidth, lineHeight);
       if (inSelection) {
         [selectionColor setFill];
-        NSRectFill(NSMakeRect(x, y, cellRectWidth, lineHeight));
+        NSRectFill(COTSnappedCellRect(cellRect));
       } else if (!defaultBackground) {
         [background setFill];
-        NSRectFill(NSMakeRect(x, y, cellRectWidth, lineHeight));
+        NSRectFill(COTSnappedCellRect(cellRect));
       }
 
       NSFont *cellFont = [self fontForBold:cell.attributes.bold italic:cell.attributes.italic];
+      // Box drawing and block elements as rectangles (COTCairoCells), so lines join across cells and rows; the line of
+      // text gets spaces in their place.
+      BOOL drawnHere = NO;
+      if (!hidden && cell.text.size() == 3 && (unsigned char)cell.text[0] == 0xE2) {
+        UTF32Char code = ((UTF32Char)(cell.text[0] & 0x0F) << 12) | ((UTF32Char)(cell.text[1] & 0x3F) << 6) |
+                         (UTF32Char)(cell.text[2] & 0x3F);
+        NSColor *behind = inSelection ? selectionColor : (defaultBackground ? [theme backgroundColor] : background);
+        drawnHere = COTDrawBoxCell(code, cellRect, foreground, behind);
+      }
+      // Emoji, and anything above U+FFFF, drawn by Cairo straight from fontconfig's font (COTCairoCells): GNUstep's
+      // text drawing has no glyph above U+FFFF, so 🚀 came out blank. In colour from a colour emoji font if there is one.
+      if (!hidden && !drawnHere && !cell.text.empty() && (unsigned char)cell.text[0] >= 0xE2) {
+        NSString *text = [[[NSString alloc] initWithBytes:cell.text.data() length:cell.text.size() encoding:NSUTF8StringEncoding] autorelease];
+        UTF32Char code = [text length] > 0 ? [text characterAtIndex:0] : 0;
+        if ([text length] > 1 && code >= 0xD800 && code <= 0xDBFF)
+          code = 0x10000 + ((code - 0xD800) << 10) + ([text characterAtIndex:1] - 0xDC00);
+        BOOL emoji = (COTContainsCharacter(text, 0xFE0F) || COTIsDefaultEmoji(code)) && !COTContainsCharacter(text, 0xFE0E);
+        if (emoji || code >= 0x10000)
+          drawnHere = COTDrawCairoGlyphCell(cell.text, code, emoji, [cellFont familyName], [cellFont pointSize], cellRect, foreground);
+      }
       NSString *cellString = nil;
       NSFont *fallback = nil;
-      if (!hidden && !cell.text.empty() && (unsigned char)cell.text[0] >= 0x80) {
+      if (!hidden && !drawnHere && !cell.text.empty() && (unsigned char)cell.text[0] >= 0x80) {
         cellString = [[[NSString alloc] initWithBytes:cell.text.data() length:cell.text.size() encoding:NSUTF8StringEncoding] autorelease];
         fallback = [self fallbackFontFor:cellString font:cellFont cellWidth:cellRectWidth lineHeight:lineHeight];
       }
@@ -1071,8 +1094,8 @@ static std::uint32_t COTRGB(NSColor *color) {
           flushRun();
         }
         runAttributes = attrs;
-        runText += hidden ? std::string((std::size_t)cellWidthCells, ' ') : cell.text;
-        if (!hidden && !cell.text.empty() && cell.text.size() > 1) runHasNonASCII = true;
+        runText += (hidden || drawnHere) ? std::string((std::size_t)cellWidthCells, ' ') : cell.text;
+        if (!hidden && !drawnHere && !cell.text.empty() && cell.text.size() > 1) runHasNonASCII = true;
       }
 
       if (cell.attributes.underline) {
@@ -1116,10 +1139,14 @@ static std::uint32_t COTRGB(NSColor *color) {
       NSUInteger cursorColumn = snapshot->cursorColumn;
       NSString *cursorText = @" ";
       NSFont *cursorFont = font;
+      std::string cursorUTF8;
+      int cursorCells = 1;
       if (cursorRow < rows.size() && cursorColumn < rows[cursorRow].size()) {
         const cot::TerminalCell &cell = rows[cursorRow][cursorColumn];
         cursorFont = [self fontForBold:cell.attributes.bold italic:cell.attributes.italic];
         if (!cell.continuation && !cell.text.empty()) {
+          cursorUTF8 = cell.text;
+          cursorCells = std::max(1, cell.width);
           NSString *temp = [[NSString alloc] initWithBytes:cell.text.data()
                                                     length:cell.text.size()
                                                   encoding:NSUTF8StringEncoding];
@@ -1128,10 +1155,23 @@ static std::uint32_t COTRGB(NSColor *color) {
           }
         }
       }
-      NSMutableDictionary *cursorAttributes = [NSMutableDictionary dictionaryWithDictionary:_textAttributes];
-      [cursorAttributes setObject:[theme backgroundColor] forKey:NSForegroundColorAttributeName];
-      [cursorAttributes setObject:cursorFont forKey:NSFontAttributeName];
-      [cursorText drawAtPoint:NSMakePoint(cursorX, cursorY) withAttributes:cursorAttributes];
+      // Box drawing and emoji under the cursor: drawn as in any other cell, in the cursor's text colour.
+      UTF32Char cursorCode = [cursorText length] > 0 ? [cursorText characterAtIndex:0] : 0;
+      if ([cursorText length] > 1 && cursorCode >= 0xD800 && cursorCode <= 0xDBFF)
+        cursorCode = 0x10000 + ((cursorCode - 0xD800) << 10) + ([cursorText characterAtIndex:1] - 0xDC00);
+      BOOL cursorEmoji = (COTContainsCharacter(cursorText, 0xFE0F) || COTIsDefaultEmoji(cursorCode)) &&
+                         !COTContainsCharacter(cursorText, 0xFE0E);
+      NSRect cursorCellRect = NSMakeRect(cursorX, cursorY, cellWidth * cursorCells, lineHeight);
+      BOOL cursorDrawn = COTDrawBoxCell(cursorCode, cursorRect, [theme backgroundColor], [theme cursorColor]);
+      if (!cursorDrawn && (cursorEmoji || cursorCode >= 0x10000) && !cursorUTF8.empty())
+        cursorDrawn = COTDrawCairoGlyphCell(cursorUTF8, cursorCode, cursorEmoji, [cursorFont familyName], [cursorFont pointSize],
+                                            cursorCellRect, [theme backgroundColor]);
+      if (!cursorDrawn) {
+        NSMutableDictionary *cursorAttributes = [NSMutableDictionary dictionaryWithDictionary:_textAttributes];
+        [cursorAttributes setObject:[theme backgroundColor] forKey:NSForegroundColorAttributeName];
+        [cursorAttributes setObject:cursorFont forKey:NSFontAttributeName];
+        [cursorText drawAtPoint:NSMakePoint(cursorX, cursorY) withAttributes:cursorAttributes];
+      }
     }
   }
 }

@@ -49,8 +49,14 @@ int main() {
   [theme setForegroundColor:[NSColor whiteColor]];
   [theme setBackgroundColor:[NSColor blackColor]];
   // "ready", then on a line of input a red block.
-  [configuration setShellCommand:[NSArray arrayWithObjects:@"/bin/sh", @"-c",
-    @"printf 'ready\\r\\n'; read x; printf '\\033[41mRED-RED-RED-RED\\033[0m\\r\\n'; exec sleep 30", nil]];
+  NSString *script = @"printf 'ready\\r\\n'; read x; printf '\\033[41mRED-RED-RED-RED\\033[0m\\r\\n'; exec sleep 30";
+#if defined(_WIN32)
+  NSString *shell = @"C:\\msys64\\usr\\bin\\sh.exe";  // MSYS2's, as the bench uses; COT_CAPTURE_TEST_SHELL overrides
+#else
+  NSString *shell = @"/bin/sh";
+#endif
+  if (getenv("COT_CAPTURE_TEST_SHELL")) shell = [NSString stringWithUTF8String:getenv("COT_CAPTURE_TEST_SHELL")];
+  [configuration setShellCommand:[NSArray arrayWithObjects:shell, @"-c", script, nil]];
   NSRect frame = NSMakeRect(0, 0, 400, 120);
   NSWindow *window = [[NSWindow alloc] initWithContentRect:frame styleMask:NSBorderlessWindowMask backing:NSBackingStoreBuffered defer:NO];
   COTTerminalView *view = [[COTTerminalView alloc] initWithFrame:frame configuration:configuration];

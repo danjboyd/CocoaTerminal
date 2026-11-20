@@ -89,13 +89,17 @@ struct GL {
   COT_GL_FN(void, PixelStorei, (GLenum, GLint))
   COT_GL_FN(void, ReadPixels, (GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *))
   COT_GL_FN(void, GenTextures, (GLsizei, GLuint *))
+  COT_GL_FN(void, DeleteTextures, (GLsizei, const GLuint *))
   COT_GL_FN(void, BindTexture, (GLenum, GLuint))
   COT_GL_FN(void, TexParameteri, (GLenum, GLenum, GLint))
   COT_GL_FN(void, TexImage2D, (GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *))
   COT_GL_FN(void, TexSubImage2D, (GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void *))
   COT_GL_FN(void, GenVertexArrays, (GLsizei, GLuint *))
+  COT_GL_FN(void, DeleteVertexArrays, (GLsizei, const GLuint *))
   COT_GL_FN(void, BindVertexArray, (GLuint))
   COT_GL_FN(void, GenBuffers, (GLsizei, GLuint *))
+  COT_GL_FN(void, DeleteBuffers, (GLsizei, const GLuint *))
+  COT_GL_FN(void, DeleteProgram, (GLuint))
   COT_GL_FN(void, BindBuffer, (GLenum, GLuint))
   COT_GL_FN(void, BufferData, (GLenum, GLsizeiptr, const void *, GLenum))
   COT_GL_FN(void, VertexAttribPointer, (GLuint, GLint, GLenum, GLboolean, GLsizei, const void *))
@@ -139,7 +143,7 @@ struct GL {
     COT_GL_LOAD(GetString) COT_GL_LOAD(GetError) COT_GL_LOAD(Viewport) COT_GL_LOAD(ClearColor) COT_GL_LOAD(Clear)
     COT_GL_LOAD(Enable) COT_GL_LOAD(Disable) COT_GL_LOAD(BlendFunc) COT_GL_LOAD(PixelStorei) COT_GL_LOAD(ReadPixels)
     COT_GL_LOAD(GenTextures) COT_GL_LOAD(BindTexture) COT_GL_LOAD(TexParameteri) COT_GL_LOAD(TexImage2D)
-    COT_GL_LOAD(TexSubImage2D)
+    COT_GL_LOAD(TexSubImage2D) COT_GL_LOAD(DeleteTextures)
     return true;
   }
 
@@ -153,24 +157,28 @@ struct GL {
     COT_GL_LOAD(Uniform1f) COT_GL_LOAD(Uniform2f) COT_GL_LOAD(ActiveTexture) COT_GL_LOAD(GenFramebuffers)
     COT_GL_LOAD(BindFramebuffer) COT_GL_LOAD(DeleteFramebuffers) COT_GL_LOAD(GenRenderbuffers)
     COT_GL_LOAD(BindRenderbuffer) COT_GL_LOAD(DeleteRenderbuffers) COT_GL_LOAD(RenderbufferStorage)
-    COT_GL_LOAD(FramebufferRenderbuffer) COT_GL_LOAD(CheckFramebufferStatus)
+    COT_GL_LOAD(FramebufferRenderbuffer) COT_GL_LOAD(CheckFramebufferStatus) COT_GL_LOAD(DeleteVertexArrays)
+    COT_GL_LOAD(DeleteBuffers) COT_GL_LOAD(DeleteProgram)
 #undef COT_GL_LOAD
     return true;
   }
 };
 
-// ---- Shaders. Pixel coordinates from the top-left; y isn't flipped into OpenGL's bottom-up convention, so the frame
-// is upside down in the framebuffer and glReadPixels hands it back top row first, as the image wants.
+// ---- Shaders. Pixel coordinates from the top-left. Into the renderer's framebuffer y isn't flipped into OpenGL's
+// bottom-up convention (flip 1), so the frame is upside down there and glReadPixels hands it back top row first, as
+// the image wants; into a window's framebuffer it is (flip -1).
 
 const char *kRectVertex = R"(#version 330 core
 layout(location = 0) in vec4 rect;    // x, y, width, height in pixels
 layout(location = 1) in vec4 colour;
 uniform vec2 viewport;
+uniform float flip;
 out vec4 vColour;
 void main() {
   vec2 corner = vec2(gl_VertexID & 1, gl_VertexID >> 1);
   vec2 p = rect.xy + corner * rect.zw;
-  gl_Position = vec4(p / viewport * 2.0 - 1.0, 0.0, 1.0);
+  vec2 ndc = p / viewport * 2.0 - 1.0;
+  gl_Position = vec4(ndc.x, ndc.y * flip, 0.0, 1.0);
   vColour = colour;
 }
 )";
@@ -187,12 +195,14 @@ layout(location = 1) in vec4 source;  // where it is in the atlas, in pixels
 layout(location = 2) in vec4 colour;  // text colour; alpha 2 marks a colour (emoji) glyph
 uniform vec2 viewport;
 uniform vec2 atlasSize;
+uniform float flip;
 out vec2 vTexture;
 out vec4 vColour;
 void main() {
   vec2 corner = vec2(gl_VertexID & 1, gl_VertexID >> 1);
   vec2 p = rect.xy + corner * rect.zw;
-  gl_Position = vec4(p / viewport * 2.0 - 1.0, 0.0, 1.0);
+  vec2 ndc = p / viewport * 2.0 - 1.0;
+  gl_Position = vec4(ndc.x, ndc.y * flip, 0.0, 1.0);
   vTexture = (source.xy + corner * source.zw) / atlasSize;
   vColour = colour;
 }
@@ -242,6 +252,21 @@ struct Glyph {
 
 class Renderer : public GLRenderer {
 public:
+  // Its objects go with it while its context is current. A context of its own goes anyway, with all it holds; a
+  // view's context outlives renderers (a zoom makes a new one), so they must be deleted. If the view's context isn't
+  // current, it has gone, and its objects with it.
+  ~Renderer() override {
+    if (!_context || !_context->makeCurrent() || !_gl.DeleteProgram) return;
+    if (_framebuffer) _gl.DeleteFramebuffers(1, &_framebuffer);
+    if (_renderbuffer) _gl.DeleteRenderbuffers(1, &_renderbuffer);
+    if (_atlasTexture) _gl.DeleteTextures(1, &_atlasTexture);
+    if (_rectBuffer) _gl.DeleteBuffers(1, &_rectBuffer);
+    if (_glyphBuffer) _gl.DeleteBuffers(1, &_glyphBuffer);
+    if (_vertexArray) _gl.DeleteVertexArrays(1, &_vertexArray);
+    if (_rectProgram) _gl.DeleteProgram(_rectProgram);
+    if (_glyphProgram) _gl.DeleteProgram(_glyphProgram);
+  }
+
   bool setUp(std::unique_ptr<GLContext> context, std::unique_ptr<GlyphSource> glyphs, bool clearType, std::string *error) {
     _context = std::move(context);
     _source = std::move(glyphs);
@@ -279,7 +304,14 @@ public:
       *error = "can't make the OpenGL context current";
       return false;
     }
-    if (!sizeFramebuffer(frame.pixelWidth, frame.pixelHeight, error)) return false;
+    // With pixels: the renderer's own framebuffer, read back. Without: the current context's default framebuffer (a
+    // window's), the right way up, for the caller to swap.
+    _flip = pixels != nullptr ? 1.0f : -1.0f;
+    if (pixels != nullptr) {
+      if (!sizeFramebuffer(frame.pixelWidth, frame.pixelHeight, error)) return false;
+    } else {
+      _gl.BindFramebuffer(kFramebuffer, 0);
+    }
 
     // Batches: backgrounds (and a block cursor), glyphs, then lines and box drawing over the glyphs.
     std::vector<float> rects, glyphs, lines;
@@ -373,10 +405,12 @@ public:
     drawRects(lines, frame);
     _timing.draw = Milliseconds(drawStart);
 
-    auto readStart = std::chrono::steady_clock::now();
-    _gl.PixelStorei(kPackAlignment, 1);
-    _gl.ReadPixels(0, 0, frame.pixelWidth, frame.pixelHeight, kRGBA, kUnsignedByte, pixels);
-    _timing.readback = Milliseconds(readStart);
+    if (pixels != nullptr) {
+      auto readStart = std::chrono::steady_clock::now();
+      _gl.PixelStorei(kPackAlignment, 1);
+      _gl.ReadPixels(0, 0, frame.pixelWidth, frame.pixelHeight, kRGBA, kUnsignedByte, pixels);
+      _timing.readback = Milliseconds(readStart);
+    }
     _timing.atlasGlyphs = _glyphs.size();
     GLenum glError = _gl.GetError();
     if (glError != kNoError) {
@@ -391,6 +425,7 @@ public:
 
 private:
   static constexpr int kAtlasSize = 2048;
+  float _flip = 1.0f;
 
   bool sizeFramebuffer(int width, int height, std::string *error) {
     if (_framebuffer && width == _fbWidth && height == _fbHeight) {
@@ -474,6 +509,7 @@ private:
     _gl.Disable(kBlend);
     _gl.UseProgram(_rectProgram);
     _gl.Uniform2f(_gl.GetUniformLocation(_rectProgram, "viewport"), (float)frame.pixelWidth, (float)frame.pixelHeight);
+    _gl.Uniform1f(_gl.GetUniformLocation(_rectProgram, "flip"), _flip);
     _gl.BindBuffer(kArrayBuffer, _rectBuffer);
     _gl.BufferData(kArrayBuffer, (GLsizeiptr)(data.size() * sizeof(float)), data.data(), kStreamDraw);
     const GLsizei stride = 8 * sizeof(float);
@@ -492,6 +528,7 @@ private:
     _gl.UseProgram(_glyphProgram);
     _gl.Uniform2f(_gl.GetUniformLocation(_glyphProgram, "viewport"), (float)frame.pixelWidth, (float)frame.pixelHeight);
     _gl.Uniform2f(_gl.GetUniformLocation(_glyphProgram, "atlasSize"), (float)kAtlasSize, (float)kAtlasSize);
+    _gl.Uniform1f(_gl.GetUniformLocation(_glyphProgram, "flip"), _flip);
     _gl.Uniform1f(_gl.GetUniformLocation(_glyphProgram, "contrast"), _contrast);
     _gl.Uniform1f(_gl.GetUniformLocation(_glyphProgram, "lightGamma"), _lightGamma);
     _gl.Uniform1i(_gl.GetUniformLocation(_glyphProgram, "grayscale"), _clearType ? 0 : 1);
@@ -598,9 +635,10 @@ private:
 }  // namespace
 
 std::unique_ptr<GLRenderer> GLRenderer::create(const std::string &fontFamily, float pixelSize, Antialiasing antialiasing,
-                                               std::string *error) {
+                                               std::string *error, Context contextKind) {
   bool clearType = antialiasing == Antialiasing::ClearType;
-  std::unique_ptr<GLContext> context = MakeGLContext(error);
+  std::unique_ptr<GLContext> context =
+      contextKind == Context::Current ? MakeCurrentGLContext(error) : MakeGLContext(error);
   if (!context) return nullptr;
   std::unique_ptr<GlyphSource> glyphs;
   const char *choice = getenv("COCOATERMINAL_GL_GLYPHS");
@@ -616,6 +654,8 @@ std::unique_ptr<GLRenderer> GLRenderer::create(const std::string &fontFamily, fl
   if (!renderer->setUp(std::move(context), std::move(glyphs), clearType, error)) return nullptr;
   return renderer;
 }
+
+bool GLRenderer::setSwapInterval(int interval) { return SetCurrentSwapInterval(interval); }
 
 std::vector<std::uint32_t> DecodeUTF8(const std::string &utf8) {
   std::vector<std::uint32_t> out;
@@ -647,10 +687,11 @@ bool IsCombiningMark(std::uint32_t cp) {
 
 namespace cot {
 // Built without the renderer (COCOATERMINAL_GL_RENDERER off): the view draws with Cairo.
-std::unique_ptr<GLRenderer> GLRenderer::create(const std::string &, float, Antialiasing, std::string *error) {
+std::unique_ptr<GLRenderer> GLRenderer::create(const std::string &, float, Antialiasing, std::string *error, Context) {
   if (error) *error = "built without the OpenGL renderer (COCOATERMINAL_GL_RENDERER=OFF)";
   return nullptr;
 }
+bool GLRenderer::setSwapInterval(int) { return false; }
 }  // namespace cot
 
 #endif

@@ -53,10 +53,18 @@ Differences from Linux worth knowing:
   rectangles so they join. Built on Windows by default (CMake `COCOATERMINAL_GL_RENDERER`); on Linux it's off until
   its EGL context has been tried there, and needs `egl`, `freetype2` and `fontconfig`. To try it on a machine with no
   OpenGL 3.3, put Mesa's `opengl32.dll` (with `libgallium_wgl.dll` and its LLVM) beside the program and set
-  `GALLIUM_DRIVER=llvmpipe`. The frame is rendered off
-  screen and drawn as an image: GNUstep's `NSOpenGLView` is a child window on Windows that ignores hiding, clipping and
-  views drawn over it (`bench/COTGLCheck.mm`). `COCOATERMINAL_GL_CONTRAST` and `COCOATERMINAL_GL_GAMMA` tune text
-  weight; `COCOATERMINAL_PERF_LOG=1` prints per-frame timings.
+  `GALLIUM_DRIVER=llvmpipe`.
+
+  Frames reach the screen one of two ways. Straight into the window, through an `NSOpenGLView` covering the terminal
+  view, when GNUstep keeps that view's native child window hidden, placed and clipped with the view: that needs the
+  fix on the `glview-visibility` branches of danjboyd/libs-gui and danjboyd/libs-back (for Windows,
+  `glview-visibility-carry` on the 0.32 releases), not yet in GNUstep. Otherwise, and for a translucent window, the
+  frame is rendered off screen, read back and drawn as an image, which costs a readback and a blit per frame.
+  `COCOATERMINAL_GL_PRESENT=window` or `=image` forces one; `performanceSnapshot`'s `glPresentation` says which is in
+  use. Drawing straight into the window, nothing else in that window can be drawn over the terminal view (menus,
+  pop-ups and other windows are fine): `bench/COTGLCheck.mm` checks what GNUstep's `NSOpenGLView` does.
+  `COCOATERMINAL_GL_CONTRAST` and `COCOATERMINAL_GL_GAMMA` tune text weight; `COCOATERMINAL_PERF_LOG=1` prints
+  per-frame timings.
 - MSYS2's own programs (`cat`, `sh`) write to a console slowly (about 0.2 MB/s here, against about 2 MB/s for `type`
   in `cmd.exe`): that's the Cygwin console layer, whichever ConPTY is used.
 - MSYS2's `gnustep-gui.pc` omits `-lgnustep-gui`; the CMake build adds it.

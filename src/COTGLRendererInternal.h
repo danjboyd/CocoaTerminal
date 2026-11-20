@@ -40,6 +40,10 @@ public:
 };
 
 std::unique_ptr<GLContext> MakeGLContext(std::string *error);
+// The context current now (an NSOpenGLView's): makeCurrent only checks that it still is.
+std::unique_ptr<GLContext> MakeCurrentGLContext(std::string *error);
+// Frames per vertical refresh for the current context's swaps (0: don't wait for it). False if it can't be set.
+bool SetCurrentSwapInterval(int interval);
 std::unique_ptr<GlyphSource> MakeDirectWriteGlyphs(const std::string &family, float pixelSize, bool clearType, std::string *error);
 std::unique_ptr<GlyphSource> MakeFreeTypeGlyphs(const std::string &family, float pixelSize, bool clearType, std::string *error);
 

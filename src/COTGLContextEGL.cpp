@@ -100,6 +100,17 @@ std::unique_ptr<GLContext> MakeGLContext(std::string *error) {
   return context;
 }
 
+bool SetCurrentSwapInterval(int interval) {
+  EGLDisplay display = eglGetCurrentDisplay();
+  return display != EGL_NO_DISPLAY && eglSwapInterval(display, interval) == EGL_TRUE;
+}
+
+// GNUstep's NSOpenGLView on X11 uses GLX, not EGL: drawing into it needs a GLX version of this, not written yet.
+std::unique_ptr<GLContext> MakeCurrentGLContext(std::string *error) {
+  *error = "drawing into an NSOpenGLView isn't done on this platform yet (needs GLX)";
+  return nullptr;
+}
+
 }  // namespace cot
 
 #endif

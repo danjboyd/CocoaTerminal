@@ -4,9 +4,9 @@
 #pragma once
 
 // An OpenGL renderer for the terminal's cells, after Alacritty's design: glyphs rasterised once into an atlas, then
-// each frame two batched passes (cell backgrounds, then glyphs) into an off-screen framebuffer, read back into memory
-// the view draws as an image. Off-screen because GNUstep's NSOpenGLView on Windows is a child window that ignores
-// hiding, clipping and views drawn over it (bench/COTGLCheck.mm).
+// each frame two batched passes (cell backgrounds, then glyphs). Either straight into an NSOpenGLView's window (when
+// GNUstep's NSOpenGLView hides and clips its child window with the view: see bench/COTGLCheck.mm), or into an
+// off-screen framebuffer, read back into memory the view draws as an image.
 //
 // Plain C++, so platform headers stay out of the Objective-C view. Windows only for now: WGL for the context and
 // DirectWrite for glyphs, the rasteriser Windows Terminal and Alacritty use there.
@@ -54,16 +54,24 @@ struct GLTiming {
 class GLRenderer {
 public:
   enum class Antialiasing { Grayscale, ClearType };
+  // Own: the renderer's own hidden context, drawing off screen. Current: the context current when create and render
+  // are called (an NSOpenGLView's), which owns the renderer's OpenGL objects: make a new renderer if it changes.
+  enum class Context { Own, Current };
 
   // The font as a family name and a size in pixels. Null and a message on failure (no OpenGL 3.3 with framebuffers,
   // font not found); the view then draws with Cairo.
   static std::unique_ptr<GLRenderer> create(const std::string &fontFamily, float pixelSize, Antialiasing antialiasing,
-                                            std::string *error);
+                                            std::string *error, Context context = Context::Own);
   virtual ~GLRenderer() = default;
 
   // Draws the frame and reads it back into pixels: pixelWidth * pixelHeight RGBA bytes, top row first, the layout an
-  // NSBitmapImageRep wants. False and a message on failure.
+  // NSBitmapImageRep wants. With pixels null, draws into the current context's default framebuffer (a window's)
+  // instead, for the caller to swap; no readback. False and a message on failure.
   virtual bool render(const GLFrame &frame, std::uint8_t *pixels, std::string *error) = 0;
+
+  // The current context's swap interval: 1 waits for the display's refresh, 0 doesn't (for measuring). False if the
+  // driver won't.
+  static bool setSwapInterval(int interval);
 
   virtual std::string description() const = 0;  // "OpenGL 4.6 on llvmpipe; DirectWrite ClearType"
   virtual const GLTiming &lastTiming() const = 0;

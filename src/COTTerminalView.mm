@@ -184,13 +184,69 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   NSUInteger _perfDrawCalls;
   NSUInteger _perfDirtyRows;
   NSUInteger _perfFullRedraws;
-  // COCOATERMINAL_RENDERER=gl: the OpenGL renderer, the font it was made for, and the image it draws into.
+  // The OpenGL renderer, the font it was made for, the context it lives in (NULL: its own, drawing into _glImage),
+  // the image, and the NSOpenGLView it draws into when it draws straight to the window.
   cot::GLRenderer *_glRenderer;
   NSString *_glFontKey;
+  void *_glRendererContext;
   NSBitmapImageRep *_glImage;
+  NSOpenGLView *_glSurface;
   BOOL _glUnavailable;
 }
+- (void)drawGLSurface:(NSOpenGLView *)surface;
 @end
+
+// The OpenGL renderer drawing straight into the window: an NSOpenGLView covering the terminal view, which takes no
+// events (they go to the terminal view) and asks the terminal view to draw it.
+@interface COTGLSurfaceView : NSOpenGLView {
+  COTTerminalView *_terminal;  // not retained: the terminal view owns this
+}
+- (instancetype)initWithFrame:(NSRect)frame pixelFormat:(NSOpenGLPixelFormat *)format terminal:(COTTerminalView *)terminal;
+@end
+
+@implementation COTGLSurfaceView
+- (instancetype)initWithFrame:(NSRect)frame pixelFormat:(NSOpenGLPixelFormat *)format terminal:(COTTerminalView *)terminal {
+  self = [super initWithFrame:frame pixelFormat:format];
+  if (self) _terminal = terminal;
+  return self;
+}
+- (NSView *)hitTest:(NSPoint)point {
+  (void)point;
+  return nil;
+}
+- (BOOL)acceptsFirstResponder {
+  return NO;
+}
+- (BOOL)isOpaque {
+  return YES;
+}
+- (void)drawRect:(NSRect)rect {
+  (void)rect;
+  [_terminal drawGLSurface:self];
+}
+@end
+
+// Whether the OpenGL renderer can draw straight into the window: GNUstep's NSOpenGLView is a native child window,
+// usable only when GNUstep hides, moves and clips it with the view (danjboyd/libs-gui and libs-back, branch
+// glview-visibility; until then the view draws an image). COCOATERMINAL_GL_PRESENT=window or =image overrides.
+static BOOL COTGLSurfaceUsable(void) {
+  static int usable = -1;
+  if (usable < 0) {
+    const char *choice = getenv("COCOATERMINAL_GL_PRESENT");
+    if (choice != NULL && strcmp(choice, "window") == 0) {
+      usable = 1;
+    } else if (choice != NULL && strcmp(choice, "image") == 0) {
+      usable = 0;
+    } else {
+#if defined(_WIN32)
+      usable = [NSOpenGLView instancesRespondToSelector:@selector(_setNeedsDrawableUpdate)] ? 1 : 0;
+#else
+      usable = 0;  // needs a GLX context for the renderer (COTGLContextEGL.cpp)
+#endif
+    }
+  }
+  return usable == 1;
+}
 
 // The key as macOS numbers it. On macOS that's the event's keyCode. GNUstep's keyCode is the X11 keycode, which collides
 // with these (X 51 is backslash/bar, so "|" sent Backspace; 24/27/29 are q/r/y, so Ctrl+Q/R/Y zoomed), so there the
@@ -355,7 +411,14 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family, BOOL
     [_styledFonts[i] release];
   }
   [_fallbackFonts release];
+  [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(attachGLSurface) object:nil];
+  [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(detachGLSurface) object:nil];
+  if (_glSurface != nil && _glRendererContext != NULL && [[_glSurface openGLContext] view] == _glSurface) {
+    [[_glSurface openGLContext] makeCurrentContext];  // so the renderer can delete its objects in it
+  }
   delete _glRenderer;
+  [_glSurface removeFromSuperview];
+  [_glSurface release];
   [_glFontKey release];
   [_glImage release];
   [super dealloc];
@@ -448,6 +511,22 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family, BOOL
   }
 
   [self displayIfNeeded];
+  // Drawn straight into the window, the frame isn't in anything GNUstep can read back: render it once more off screen,
+  // in the surface's context, and read that.
+  if (_glSurface != nil && _glRenderer != NULL && _glRendererContext != NULL &&
+      [[_glSurface openGLContext] view] == _glSurface) {
+    [self performPendingScreenUpdate];
+    [[_glSurface openGLContext] makeCurrentContext];
+    cot::GLFrame frame;
+    std::string message;
+    if ([self buildGLFrame:&frame size:[_glSurface bounds].size] &&
+        _glRenderer->render(frame, [[self glImageForFrame:frame] bitmapData], &message)) {
+      NSData *data = [_glImage representationUsingType:NSPNGFileType properties:[NSDictionary dictionary]];
+      if ([data length] > 0) {
+        return data;
+      }
+    }
+  }
 #if defined(_WIN32)
   // GNUstep's Win32 Cairo backend draws no text into an off-screen cache, so read back what the window shows.
   if ([self window] != nil && [[self window] isVisible] && [self canDraw]) {
@@ -506,47 +585,156 @@ static std::uint32_t COTRGB(NSColor *color) {
   return [[_session configuration] renderer] == COTTerminalRendererOpenGL;
 }
 
-// The OpenGL renderer: the frame it draws, shown as an image. NO when OpenGL isn't wanted or can't start (no OpenGL
-// 3.3 with framebuffers, or a build without it); drawRect: then draws with Cairo.
-- (BOOL)drawWithOpenGL {
-  if (_glUnavailable || ![self wantsOpenGL]) {
-    return NO;
-  }
-  COTTerminalSnapshot *snapshot = [_session currentSnapshot];
-  if (snapshot == nil) {
-    return NO;
-  }
+// The renderer for the theme's font, living in the given OpenGL context (an NSOpenGLView's, current now), or in its
+// own when context is NULL. NO, with the reason on stderr, if it can't start: drawing then falls back to Cairo.
+- (BOOL)prepareGLRendererInContext:(void *)context {
   COTTerminalTheme *theme = [[_session configuration] theme];
   NSFont *font = [theme font];
   BOOL opaque = [theme opacity] >= 1.0;
   const char *antialias = getenv("COCOATERMINAL_GL_ANTIALIAS");
   BOOL clearType = opaque && !(antialias != NULL && strcmp(antialias, "grayscale") == 0);
   NSString *fontKey = [NSString stringWithFormat:@"%@|%.2f|%d", [theme fontFamily], [font pointSize], clearType];
-  if (_glRenderer == NULL || ![fontKey isEqualToString:_glFontKey]) {
+  if (_glRenderer != NULL && [fontKey isEqualToString:_glFontKey] && _glRendererContext == context) {
+    return YES;
+  }
+  // A renderer made in a context that has gone (the view's, replaced when it re-attached) finds it isn't current
+  // and leaves its objects to it.
+  delete _glRenderer;
+  _glRenderer = NULL;
+  _glRendererContext = NULL;
+  std::string error;
+  NSString *family = [font familyName] ?: [theme fontFamily];
+  std::unique_ptr<cot::GLRenderer> renderer = cot::GLRenderer::create(
+      [family UTF8String], (float)[font pointSize],
+      clearType ? cot::GLRenderer::Antialiasing::ClearType : cot::GLRenderer::Antialiasing::Grayscale, &error,
+      context != NULL ? cot::GLRenderer::Context::Current : cot::GLRenderer::Context::Own);
+  if (!renderer) {
+    fprintf(stderr, "[CocoaTerminal] OpenGL renderer unavailable, drawing with Cairo: %s\n", error.c_str());
+    _glUnavailable = YES;
+    return NO;
+  }
+  _glRenderer = renderer.release();
+  _glRendererContext = context;
+  [_glFontKey release];
+  _glFontKey = [fontKey copy];
+  if (_perfLoggingEnabled) fprintf(stderr, "[CocoaTerminal] renderer: %s\n", _glRenderer->description().c_str());
+  return YES;
+}
+
+// Whether to draw straight into the window through an NSOpenGLView: OpenGL wanted and working, GNUstep able to keep
+// the view's child window with it, and an opaque theme (a child window can't show what's behind the window).
+- (BOOL)wantsGLSurface {
+  return !_glUnavailable && [self wantsOpenGL] && COTGLSurfaceUsable() && [self window] != nil &&
+         [[[_session configuration] theme] opacity] >= 1.0;
+}
+
+- (void)attachGLSurface {
+  if (_glSurface != nil || ![self wantsGLSurface]) {
+    return;
+  }
+  NSOpenGLPixelFormatAttribute attributes[] = {NSOpenGLPFAWindow, NSOpenGLPFADoubleBuffer, NSOpenGLPFAColorSize,
+                                               (NSOpenGLPixelFormatAttribute)24, (NSOpenGLPixelFormatAttribute)0};
+  NSOpenGLPixelFormat *format = [[[NSOpenGLPixelFormat alloc] initWithAttributes:attributes] autorelease];
+  if (format == nil) {
+    fprintf(stderr, "[CocoaTerminal] no OpenGL pixel format for the window, drawing with Cairo\n");
+    _glUnavailable = YES;
+    [super setNeedsDisplay:YES];
+    return;
+  }
+  // The image path's renderer lives in its own context; the surface gets one made in its context.
+  delete _glRenderer;
+  _glRenderer = NULL;
+  _glRendererContext = NULL;
+  _glSurface = [[COTGLSurfaceView alloc] initWithFrame:[self bounds] pixelFormat:format terminal:self];
+  [_glSurface setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+  [self addSubview:_glSurface];
+  [_glSurface setNeedsDisplay:YES];
+}
+
+- (void)detachGLSurface {
+  if (_glSurface == nil) {
+    return;
+  }
+  if (_glRendererContext != NULL) {
+    if ([[_glSurface openGLContext] view] == _glSurface) {
+      [[_glSurface openGLContext] makeCurrentContext];  // so the renderer can delete its objects in it
+    }
     delete _glRenderer;
     _glRenderer = NULL;
-    std::string error;
-    NSString *family = [font familyName] ?: [theme fontFamily];
-    std::unique_ptr<cot::GLRenderer> renderer = cot::GLRenderer::create(
-        [family UTF8String], (float)[font pointSize],
-        clearType ? cot::GLRenderer::Antialiasing::ClearType : cot::GLRenderer::Antialiasing::Grayscale, &error);
-    if (!renderer) {
-      fprintf(stderr, "[CocoaTerminal] OpenGL renderer unavailable, drawing with Cairo: %s\n", error.c_str());
-      _glUnavailable = YES;
-      return NO;
-    }
-    _glRenderer = renderer.release();
-    [_glFontKey release];
-    _glFontKey = [fontKey copy];
-    if (_perfLoggingEnabled) fprintf(stderr, "[CocoaTerminal] renderer: %s\n", _glRenderer->description().c_str());
+    _glRendererContext = NULL;
   }
+  [_glSurface removeFromSuperview];
+  [_glSurface release];
+  _glSurface = nil;
+  [super setNeedsDisplay:YES];
+}
 
-  NSRect bounds = [self bounds];
+// The surface's drawRect:, with its context current: the frame straight into the window, then swapped.
+- (void)drawGLSurface:(NSOpenGLView *)surface {
+  _perfDrawCalls += 1;
+  NSOpenGLContext *context = [surface openGLContext];
+  void *native = [context CGLContextObj];
+  BOOL newRenderer = _glRenderer == NULL || _glRendererContext != native;
+  if (![self wantsGLSurface] || native == NULL || ![self prepareGLRendererInContext:native]) {
+    [self performSelector:@selector(detachGLSurface) withObject:nil afterDelay:0];
+    return;
+  }
+  if (newRenderer) {
+    // Swaps wait for the display's refresh, as a terminal should; COCOATERMINAL_GL_VSYNC=0 doesn't, for measuring
+    // what a frame costs.
+    const char *vsync = getenv("COCOATERMINAL_GL_VSYNC");
+    cot::GLRenderer::setSwapInterval(vsync != NULL && strcmp(vsync, "0") == 0 ? 0 : 1);
+  }
   cot::GLFrame frame;
-  frame.pixelWidth = (int)ceil(NSWidth(bounds));
-  frame.pixelHeight = (int)ceil(NSHeight(bounds));
+  if (![self buildGLFrame:&frame size:[surface bounds].size]) {
+    return;
+  }
+  std::string error;
+  if (!_glRenderer->render(frame, nullptr, &error)) {
+    fprintf(stderr, "[CocoaTerminal] OpenGL renderer failed, drawing with Cairo: %s\n", error.c_str());
+    _glUnavailable = YES;
+    [self performSelector:@selector(detachGLSurface) withObject:nil afterDelay:0];
+    return;
+  }
+  NSTimeInterval swapStart = [NSDate timeIntervalSinceReferenceDate];
+  [context flushBuffer];
+  if (_perfLoggingEnabled) {
+    const cot::GLTiming &t = _glRenderer->lastTiming();
+    fprintf(stderr, "[CocoaTerminal gl] prepare %.2f ms (%zu new glyphs, %zu in atlas), draw %.2f ms, swap %.2f ms\n",
+            t.prepare, t.glyphsRasterised, t.atlasGlyphs, t.draw, ([NSDate timeIntervalSinceReferenceDate] - swapStart) * 1000);
+  }
+}
+
+- (void)setNeedsDisplay:(BOOL)flag {
+  if (flag && _glSurface != nil) {
+    [_glSurface setNeedsDisplay:YES];  // it covers the view: only it needs drawing
+    return;
+  }
+  [super setNeedsDisplay:flag];
+}
+
+- (void)setNeedsDisplayInRect:(NSRect)rect {
+  if (_glSurface != nil) {
+    [_glSurface setNeedsDisplay:YES];
+    return;
+  }
+  [super setNeedsDisplayInRect:rect];
+}
+
+// The terminal's cells as the renderer wants them, for a view of the given size. NO when the size is empty.
+- (BOOL)buildGLFrame:(cot::GLFrame *)out size:(NSSize)size {
+  COTTerminalTheme *theme = [[_session configuration] theme];
+  NSFont *font = [theme font];
+  cot::GLFrame &frame = *out;
+  frame.pixelWidth = (int)ceil(size.width);
+  frame.pixelHeight = (int)ceil(size.height);
   if (frame.pixelWidth <= 0 || frame.pixelHeight <= 0) {
-    return YES;
+    return NO;
+  }
+  frame.background = COTRGB([theme backgroundColor]);
+  COTTerminalSnapshot *snapshot = [_session currentSnapshot];
+  if (snapshot == nil) {
+    return YES;  // just the background
   }
   NSEdgeInsets insets = [theme contentInsets];
   CGFloat lineHeight = _lineHeight > 0 ? _lineHeight : [font ascender] - [font descender] + [theme lineSpacing];
@@ -645,7 +833,11 @@ static std::uint32_t COTRGB(NSColor *color) {
     frame.cursorColour = COTRGB([theme cursorColor]);
     frame.cursorTextColour = frame.background;
   }
+  return YES;
+}
 
+// The image the renderer reads a frame back into, kept between frames of the same size.
+- (NSBitmapImageRep *)glImageForFrame:(const cot::GLFrame &)frame {
   if (_glImage == nil || [_glImage pixelsWide] != frame.pixelWidth || [_glImage pixelsHigh] != frame.pixelHeight) {
     [_glImage release];
     _glImage = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:frame.pixelWidth pixelsHigh:frame.pixelHeight
@@ -653,6 +845,38 @@ static std::uint32_t COTRGB(NSColor *color) {
                                                    colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:frame.pixelWidth * 4
                                                      bitsPerPixel:32];
   }
+  return _glImage;
+}
+
+// OpenGL in drawRect:. Straight into the window when it can (the surface draws; this draws nothing), else the frame
+// rendered off screen and drawn as an image. NO when OpenGL isn't wanted or can't start (no OpenGL 3.3 with
+// framebuffers, or a build without it): drawRect: then draws with Cairo.
+- (BOOL)drawWithOpenGL {
+  if (_glUnavailable || ![self wantsOpenGL]) {
+    if (_glSurface != nil) [self performSelector:@selector(detachGLSurface) withObject:nil afterDelay:0];
+    return NO;
+  }
+  if ([self wantsGLSurface]) {
+    if (_glSurface == nil) {
+      // Not from inside drawing: added next time round the run loop. Cairo draws this once.
+      [self performSelector:@selector(attachGLSurface) withObject:nil afterDelay:0];
+      return NO;
+    }
+    return YES;
+  }
+  if (_glSurface != nil) {
+    [self performSelector:@selector(detachGLSurface) withObject:nil afterDelay:0];
+    return NO;
+  }
+  if (![self prepareGLRendererInContext:NULL]) {
+    return NO;
+  }
+  NSRect bounds = [self bounds];
+  cot::GLFrame frame;
+  if (![self buildGLFrame:&frame size:bounds.size]) {
+    return YES;
+  }
+  [self glImageForFrame:frame];
   std::string error;
   if (!_glRenderer->render(frame, [_glImage bitmapData], &error)) {
     fprintf(stderr, "[CocoaTerminal] OpenGL renderer failed, drawing with Cairo: %s\n", error.c_str());
@@ -1676,6 +1900,9 @@ static std::uint32_t COTRGB(NSColor *color) {
     [NSNumber numberWithUnsignedInteger:_perfFullRedraws], @"fullRedraws",
     [NSNumber numberWithDouble:(1.0 / COTTerminalRepaintInterval())], @"maxFPS",
     ([self wantsOpenGL] && !_glUnavailable && _glRenderer != NULL) ? @"opengl" : @"cairo", @"renderer",
+    // How OpenGL frames reach the screen: straight into the window, or read back and drawn as an image.
+    ([self wantsOpenGL] && !_glUnavailable && _glRenderer != NULL) ? (_glRendererContext != NULL ? @"window" : @"image")
+                                                                   : @"none", @"glPresentation",
     nil];
 }
 

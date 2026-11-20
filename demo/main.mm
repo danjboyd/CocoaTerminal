@@ -1092,6 +1092,7 @@ static NSString *COTPythonScenarioScript(NSString *body) {
   [state appendFormat:@"opacity=%.2f\n", [theme opacity]];
   [state appendFormat:@"renderer_requested=%@\n",
                       [[[_terminalView session] configuration] renderer] == COTTerminalRendererOpenGL ? @"opengl" : @"cairo"];
+  [state appendFormat:@"gl_presentation=%@\n", [[_terminalView performanceSnapshot] objectForKey:@"glPresentation"]];
   [state appendFormat:@"renderer=%@\n", [[_terminalView performanceSnapshot] objectForKey:@"renderer"]];
   [state appendFormat:@"zoom_baseline_size=%.1f\n", _zoomBaselineSize];
   [state appendFormat:@"zoom_after_in=%.1f\n", _zoomAfterInSize];

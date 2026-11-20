@@ -73,12 +73,49 @@ private:
   HMODULE _opengl32 = NULL;
 };
 
+// Someone else's context (an NSOpenGLView's), current when it's made: the renderer's objects live in it, so it must
+// be current whenever the renderer draws.
+class CurrentWGLContext : public GLContext {
+public:
+  explicit CurrentWGLContext(HGLRC context) : _context(context), _opengl32(GetModuleHandleA("opengl32.dll")) {}
+
+  bool makeCurrent() override { return wglGetCurrentContext() == _context; }
+
+  void *proc(const char *name) override {
+    PROC p = wglGetProcAddress(name);
+    intptr_t v = (intptr_t)p;
+    if (v == 0 || v == 1 || v == 2 || v == 3 || v == -1) p = _opengl32 ? GetProcAddress(_opengl32, name) : NULL;
+    return (void *)p;
+  }
+
+  std::string description() const override { return "WGL, the view's context"; }
+
+private:
+  HGLRC _context;
+  HMODULE _opengl32;
+};
+
 }  // namespace
 
 std::unique_ptr<GLContext> MakeGLContext(std::string *error) {
   std::unique_ptr<WGLContext> context(new WGLContext);
   if (!context->setUp(error)) return nullptr;
   return context;
+}
+
+bool SetCurrentSwapInterval(int interval) {
+  typedef BOOL(WINAPI * SwapInterval)(int);
+  SwapInterval set = (SwapInterval)(void *)wglGetProcAddress("wglSwapIntervalEXT");
+  return set != NULL && set(interval);
+}
+
+std::unique_ptr<GLContext> MakeCurrentGLContext(std::string *error) {
+  HGLRC current = wglGetCurrentContext();
+  if (current == NULL) {
+    *error = "no OpenGL context is current";
+    return nullptr;
+  }
+  return std::unique_ptr<GLContext>(new CurrentWGLContext(current));
 }
 
 }  // namespace cot

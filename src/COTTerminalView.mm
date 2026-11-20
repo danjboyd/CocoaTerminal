@@ -11,6 +11,7 @@
 
 #include <unordered_map>
 
+#include "COTCairoCells.h"
 #include "COTGLRenderer.h"
 
 static NSString *const COTTerminalViewErrorDomain = @"COTTerminalViewErrorDomain";
@@ -1034,18 +1035,29 @@ static std::uint32_t COTRGB(NSColor *color) {
         inSelection = (rowIndex >= selStartRow && rowIndex <= selEndRow &&
                        columnIndex >= firstColInRow && columnIndex < lastColInRow);
       }
+      // Backgrounds on whole pixels, as the OpenGL renderer's: neighbouring cells meet without a seam.
+      NSRect cellRect = NSMakeRect(x, y, cellRectWidth, lineHeight);
       if (inSelection) {
         [selectionColor setFill];
-        NSRectFill(NSMakeRect(x, y, cellRectWidth, lineHeight));
+        NSRectFill(COTSnappedCellRect(cellRect));
       } else if (!defaultBackground) {
         [background setFill];
-        NSRectFill(NSMakeRect(x, y, cellRectWidth, lineHeight));
+        NSRectFill(COTSnappedCellRect(cellRect));
       }
 
       NSFont *cellFont = [self fontForBold:cell.attributes.bold italic:cell.attributes.italic];
+      // Box drawing and block elements as rectangles (COTCairoCells), so lines join across cells and rows; the line of
+      // text gets spaces in their place.
+      BOOL drawnHere = NO;
+      if (!hidden && cell.text.size() == 3 && (unsigned char)cell.text[0] == 0xE2) {
+        UTF32Char code = ((UTF32Char)(cell.text[0] & 0x0F) << 12) | ((UTF32Char)(cell.text[1] & 0x3F) << 6) |
+                         (UTF32Char)(cell.text[2] & 0x3F);
+        NSColor *behind = inSelection ? selectionColor : (defaultBackground ? [theme backgroundColor] : background);
+        drawnHere = COTDrawBoxCell(code, cellRect, foreground, behind);
+      }
       NSString *cellString = nil;
       NSFont *fallback = nil;
-      if (!hidden && !cell.text.empty() && (unsigned char)cell.text[0] >= 0x80) {
+      if (!hidden && !drawnHere && !cell.text.empty() && (unsigned char)cell.text[0] >= 0x80) {
         cellString = [[[NSString alloc] initWithBytes:cell.text.data() length:cell.text.size() encoding:NSUTF8StringEncoding] autorelease];
         fallback = [self fallbackFontFor:cellString font:cellFont cellWidth:cellRectWidth lineHeight:lineHeight];
       }
@@ -1070,8 +1082,8 @@ static std::uint32_t COTRGB(NSColor *color) {
           flushRun();
         }
         runAttributes = attrs;
-        runText += hidden ? std::string((std::size_t)cellWidthCells, ' ') : cell.text;
-        if (!hidden && !cell.text.empty() && cell.text.size() > 1) runHasNonASCII = true;
+        runText += (hidden || drawnHere) ? std::string((std::size_t)cellWidthCells, ' ') : cell.text;
+        if (!hidden && !drawnHere && !cell.text.empty() && cell.text.size() > 1) runHasNonASCII = true;
       }
 
       if (cell.attributes.underline) {
@@ -1127,10 +1139,14 @@ static std::uint32_t COTRGB(NSColor *color) {
           }
         }
       }
-      NSMutableDictionary *cursorAttributes = [NSMutableDictionary dictionaryWithDictionary:_textAttributes];
-      [cursorAttributes setObject:[theme backgroundColor] forKey:NSForegroundColorAttributeName];
-      [cursorAttributes setObject:cursorFont forKey:NSFontAttributeName];
-      [cursorText drawAtPoint:NSMakePoint(cursorX, cursorY) withAttributes:cursorAttributes];
+      // A box drawing character under the cursor: rectangles too, in the cursor's text colour.
+      UTF32Char cursorCode = [cursorText length] == 1 ? [cursorText characterAtIndex:0] : 0;
+      if (!COTDrawBoxCell(cursorCode, cursorRect, [theme backgroundColor], [theme cursorColor])) {
+        NSMutableDictionary *cursorAttributes = [NSMutableDictionary dictionaryWithDictionary:_textAttributes];
+        [cursorAttributes setObject:[theme backgroundColor] forKey:NSForegroundColorAttributeName];
+        [cursorAttributes setObject:cursorFont forKey:NSFontAttributeName];
+        [cursorText drawAtPoint:NSMakePoint(cursorX, cursorY) withAttributes:cursorAttributes];
+      }
     }
   }
 }

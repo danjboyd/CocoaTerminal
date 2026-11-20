@@ -35,6 +35,7 @@ else()
 endif()
 
 add_library(CocoaTerminal
+  src/COTCairoCells.mm
   src/COTConPTY.cpp
   src/COTGLRenderer.cpp
   src/COTTerminalConfiguration.mm
@@ -191,6 +192,11 @@ if(COCOATERMINAL_BUILD_TESTS)
   set_target_properties(CocoaTerminalCaptureTests PROPERTIES LINKER_LANGUAGE OBJCXX)
   target_link_libraries(CocoaTerminalCaptureTests PRIVATE CocoaTerminal::CocoaTerminal)
   add_test(NAME CocoaTerminalCaptureTests COMMAND CocoaTerminalCaptureTests)
+
+  add_executable(CocoaTerminalCairoRenderTests tests/COTTerminalCairoRenderTests.mm)
+  set_target_properties(CocoaTerminalCairoRenderTests PROPERTIES LINKER_LANGUAGE OBJCXX)
+  target_link_libraries(CocoaTerminalCairoRenderTests PRIVATE CocoaTerminal::CocoaTerminal)
+  add_test(NAME CocoaTerminalCairoRenderTests COMMAND CocoaTerminalCairoRenderTests)
 
   add_executable(CocoaTerminalKeyTests tests/COTTerminalKeyTests.mm)
   set_target_properties(CocoaTerminalKeyTests PROPERTIES LINKER_LANGUAGE OBJCXX)

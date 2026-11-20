@@ -14,6 +14,13 @@ set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
 
 option(COCOATERMINAL_BUILD_DEMO "Build the CocoaTerminal demo app" ON)
 option(COCOATERMINAL_BUILD_TESTS "Build CocoaTerminal tests" ON)
+# The OpenGL renderer (COCOATERMINAL_RENDERER=gl at run time). On by default on Windows; elsewhere it needs EGL,
+# FreeType and fontconfig, and is off until it has been run on Linux.
+if(WIN32)
+  option(COCOATERMINAL_GL_RENDERER "Build the OpenGL renderer" ON)
+else()
+  option(COCOATERMINAL_GL_RENDERER "Build the OpenGL renderer" OFF)
+endif()
 
 include(GNUInstallDirs)
 find_package(PkgConfig REQUIRED)
@@ -29,7 +36,7 @@ endif()
 
 add_library(CocoaTerminal
   src/COTConPTY.cpp
-  src/COTGLRendererWin.cpp
+  src/COTGLRenderer.cpp
   src/COTTerminalConfiguration.mm
   src/COTTerminalGrid.cpp
   src/COTTerminalSession.mm
@@ -38,6 +45,27 @@ add_library(CocoaTerminal
 )
 
 add_library(CocoaTerminal::CocoaTerminal ALIAS CocoaTerminal)
+
+if(COCOATERMINAL_GL_RENDERER AND NOT APPLE)
+  pkg_check_modules(COT_FREETYPE REQUIRED freetype2 fontconfig)
+  target_sources(CocoaTerminal PRIVATE src/COTGlyphsFreeType.cpp)
+  target_compile_definitions(CocoaTerminal PRIVATE COCOATERMINAL_GL_RENDERER=1)
+  # pkg-config lists the toolchain's own include directory too; as an -I it would come before libc++'s headers.
+  list(FILTER COT_FREETYPE_INCLUDE_DIRS EXCLUDE REGEX "[/\\]include$")
+  target_include_directories(CocoaTerminal PRIVATE ${COT_FREETYPE_INCLUDE_DIRS})
+  target_link_directories(CocoaTerminal PUBLIC ${COT_FREETYPE_LIBRARY_DIRS})
+  target_link_libraries(CocoaTerminal PUBLIC ${COT_FREETYPE_LIBRARIES})
+  if(WIN32)
+    target_sources(CocoaTerminal PRIVATE src/COTGLContextWGL.cpp src/COTGlyphsDirectWrite.cpp)
+    target_link_libraries(CocoaTerminal PUBLIC opengl32 gdi32 dwrite)
+  else()
+    pkg_check_modules(COT_EGL REQUIRED egl)
+    target_sources(CocoaTerminal PRIVATE src/COTGLContextEGL.cpp)
+    target_include_directories(CocoaTerminal PRIVATE ${COT_EGL_INCLUDE_DIRS})
+    target_link_directories(CocoaTerminal PUBLIC ${COT_EGL_LIBRARY_DIRS})
+    target_link_libraries(CocoaTerminal PUBLIC ${COT_EGL_LIBRARIES})
+  endif()
+endif()
 
 target_include_directories(CocoaTerminal
   PUBLIC
@@ -74,8 +102,6 @@ else()
   endif()
   if(NOT WIN32)
     target_link_libraries(CocoaTerminal PUBLIC util)  # forkpty
-  else()
-    target_link_libraries(CocoaTerminal PUBLIC opengl32 gdi32 dwrite)  # the OpenGL renderer (COCOATERMINAL_RENDERER=gl)
   endif()
   target_link_libraries(CocoaTerminal PUBLIC dispatch)
 endif()

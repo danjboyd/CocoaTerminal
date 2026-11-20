@@ -618,8 +618,13 @@ static std::uint32_t COTRGB(NSColor *color) {
                                                    encoding:NSUTF8StringEncoding] autorelease];
           NSString *drawable = COTDrawableCellText(text ?: @" ");
           out.text = std::string([drawable UTF8String] ?: " ");
-          // Keep the presentation selector: the renderer uses U+FE0F to pick a colour emoji font.
-          if (cell.text.find("\xEF\xB8\x8F") != std::string::npos) out.text += "\xEF\xB8\x8F";
+          // The renderer picks a colour emoji font for U+FE0F: keep it, and add it to characters that are emoji by
+          // default (U+2705 ✅) so they're drawn in colour too, not from a monochrome symbol font.
+          UTF32Char first = [drawable length] > 0 ? [drawable characterAtIndex:0] : 0;
+          if (first >= 0xD800 && first <= 0xDBFF && [drawable length] > 1) {
+            first = 0x10000 + ((first - 0xD800) << 10) + ([drawable characterAtIndex:1] - 0xDC00);
+          }
+          if (cell.text.find("\xEF\xB8\x8F") != std::string::npos || COTIsDefaultEmoji(first)) out.text += "\xEF\xB8\x8F";
         } else {
           out.text = cell.text;
         }

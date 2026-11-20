@@ -27,6 +27,10 @@ public:
     std::function<void(std::uint32_t exitCode)> exited;
   };
 
+  // This process's environment as it is now (UTF-8 names and values), for building a child's: GNUstep's NSProcessInfo
+  // keeps the one the process started with.
+  static std::vector<std::pair<std::string, std::string>> currentEnvironment();
+
   // argv, environment and workingDirectory are UTF-8. An empty workingDirectory inherits ours. On failure, null and a
   // message in *error.
   static std::unique_ptr<ConPTYProcess> spawn(const std::vector<std::string> &argv,

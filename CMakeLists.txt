@@ -40,10 +40,16 @@ add_library(CocoaTerminal
   src/COTGLRenderer.cpp
   src/COTTerminalConfiguration.mm
   src/COTTerminalGrid.cpp
+  src/COTTransportWriter.cpp
+  src/COTSessionLifecycle.cpp
   src/COTTerminalSession.mm
   src/COTTerminalTheme.mm
   src/COTTerminalView.mm
 )
+if(NOT WIN32)
+  # The forkpty child's plan (Unix only; Windows starts the shell through ConPTY, src/COTConPTY.cpp).
+  target_sources(CocoaTerminal PRIVATE src/COTSpawnPlan.cpp)
+endif()
 
 add_library(CocoaTerminal::CocoaTerminal ALIAS CocoaTerminal)
 
@@ -235,4 +241,43 @@ if(COCOATERMINAL_BUILD_TESTS)
   set_target_properties(CocoaTerminalObserverTests PROPERTIES LINKER_LANGUAGE OBJCXX)
   target_link_libraries(CocoaTerminalObserverTests PRIVATE CocoaTerminal::CocoaTerminal)
   add_test(NAME CocoaTerminalObserverTests COMMAND CocoaTerminalObserverTests)
+
+  # Local disposable children only (each case has a 5 s alarm); no SSH/GUI/clipboard.
+  # Linux only: it counts fds, children and zombies through /proc, which macOS hasn't got.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(CocoaTerminalChildTests tests/COTSessionChildTests.mm)
+    set_target_properties(CocoaTerminalChildTests PROPERTIES LINKER_LANGUAGE OBJCXX)
+    target_link_libraries(CocoaTerminalChildTests PRIVATE CocoaTerminal::CocoaTerminal)
+    add_test(NAME CocoaTerminalChildTests COMMAND CocoaTerminalChildTests)
+    set_tests_properties(CocoaTerminalChildTests PROPERTIES TIMEOUT 25)
+  endif()
+endif()
+
+if(COCOATERMINAL_BUILD_TESTS)
+  add_executable(CocoaTerminalWriterTests tests/COTTransportWriterTests.cpp src/COTTransportWriter.cpp)
+  target_include_directories(CocoaTerminalWriterTests PRIVATE src)
+  add_test(NAME CocoaTerminalWriterTests COMMAND CocoaTerminalWriterTests)
+endif()
+
+if(COCOATERMINAL_BUILD_TESTS AND NOT WIN32)
+  # Unix child reaping (its cases use SIGHUP and SIGKILL statuses); Windows sessions use ConPTY instead.
+  add_executable(CocoaTerminalLifecycleTests tests/COTSessionLifecycleTests.cpp src/COTSessionLifecycle.cpp)
+  target_include_directories(CocoaTerminalLifecycleTests PRIVATE src)
+  target_compile_features(CocoaTerminalLifecycleTests PRIVATE cxx_std_17)
+  add_test(NAME CocoaTerminalLifecycleTests COMMAND CocoaTerminalLifecycleTests)
+endif()
+
+if(COCOATERMINAL_BUILD_TESTS AND NOT WIN32)
+  # Plain fork() children in a scratch dir (5 s alarm); no PTY/SSH/GUI/clipboard.
+  add_executable(CocoaTerminalSpawnTests tests/COTSpawnPlanTests.cpp src/COTSpawnPlan.cpp)
+  target_include_directories(CocoaTerminalSpawnTests PRIVATE src)
+  target_compile_features(CocoaTerminalSpawnTests PRIVATE cxx_std_17)
+  add_test(NAME CocoaTerminalSpawnTests COMMAND CocoaTerminalSpawnTests)
+  set_tests_properties(CocoaTerminalSpawnTests PROPERTIES TIMEOUT 15)
+endif()
+
+if(COCOATERMINAL_BUILD_TESTS)
+  add_executable(CocoaTerminalFairnessTests tests/COTTransportFairnessTests.cpp src/COTTransportWriter.cpp)
+  target_include_directories(CocoaTerminalFairnessTests PRIVATE src)
+  add_test(NAME CocoaTerminalFairnessTests COMMAND CocoaTerminalFairnessTests)
 endif()

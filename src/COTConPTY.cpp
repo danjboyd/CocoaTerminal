@@ -158,6 +158,28 @@ std::string ConPTYProcess::implementation() {
   return PseudoConsole().description;
 }
 
+std::vector<std::pair<std::string, std::string>> ConPTYProcess::currentEnvironment() {
+  std::vector<std::pair<std::string, std::string>> result;
+  wchar_t *block = GetEnvironmentStringsW();
+  if (block == NULL) {
+    return result;
+  }
+  auto utf8 = [](const wchar_t *text, int length) {
+    int count = WideCharToMultiByte(CP_UTF8, 0, text, length, NULL, 0, NULL, NULL);
+    std::string out(count > 0 ? (std::size_t)count : 0, '\0');
+    if (count > 0) WideCharToMultiByte(CP_UTF8, 0, text, length, &out[0], count, NULL, NULL);
+    return out;
+  };
+  for (const wchar_t *entry = block; *entry != L'\0'; entry += wcslen(entry) + 1) {
+    // "=C:=C:\dir" and the like (a drive's current directory) start with '=': not variables.
+    const wchar_t *equals = entry[0] == L'=' ? NULL : wcschr(entry, L'=');
+    if (equals == NULL) continue;
+    result.emplace_back(utf8(entry, (int)(equals - entry)), utf8(equals + 1, (int)wcslen(equals + 1)));
+  }
+  FreeEnvironmentStringsW(block);
+  return result;
+}
+
 struct ConPTYProcess::State {
   HPCON console = NULL;
   HANDLE input = INVALID_HANDLE_VALUE;   // we write the keyboard here

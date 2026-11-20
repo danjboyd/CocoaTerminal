@@ -9,6 +9,9 @@
 NS_ASSUME_NONNULL_BEGIN
 
 extern NSString *const COTTerminalViewDidExitNotification;
+// Posted on the main thread at most once per repaint tick when the screen changed, whether or not the view is visible
+// (a host can mark a hidden tab as having new output). The object is the view.
+extern NSString *const COTTerminalViewDidUpdateScreenNotification;
 extern NSString *const COTTerminalExitStatusUserInfoKey;
 
 @interface COTTerminalView : NSView <COTTerminalDelegate>

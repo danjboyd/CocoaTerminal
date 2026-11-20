@@ -5,6 +5,7 @@
 #import <CocoaTerminal/COTTerminalTheme.h>
 #import <CocoaTerminal/COTTerminalView.h>
 
+#import "COTAppKitCompat.h"
 #import "COTTerminalSessionInternal.h"
 
 #include <math.h>
@@ -21,6 +22,7 @@
 
 static NSString *const COTTerminalViewErrorDomain = @"COTTerminalViewErrorDomain";
 NSString *const COTTerminalViewDidExitNotification = @"COTTerminalViewDidExitNotification";
+NSString *const COTTerminalViewDidUpdateScreenNotification = @"COTTerminalViewDidUpdateScreenNotification";
 NSString *const COTTerminalExitStatusUserInfoKey = @"status";
 static NSUInteger const COTTerminalMaximumColumns = 1000;
 static NSUInteger const COTTerminalMaximumRows = 1000;
@@ -204,6 +206,9 @@ static NSColor *COTColorFromTerminalColor(const cot::TerminalColor &color, COTTe
   BOOL _screenUpdateScheduled;
   BOOL _pendingFullRedraw;
   NSMutableIndexSet *_pendingDirtyRows;
+  // The row the cursor was last painted on (NSNotFound: none). A cursor that leaves a row whose text didn't change
+  // must still repaint that row, or its old block stays on screen.
+  NSUInteger _paintedCursorRow;
   BOOL _perfLoggingEnabled;
   NSTimeInterval _perfLastLogTime;
   NSUInteger _perfScreenUpdates;
@@ -401,6 +406,7 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family, BOOL
     _activeMouseButton = -1;
     _findLine = NSNotFound;
     _pendingDirtyRows = [[NSMutableIndexSet alloc] init];
+    _paintedCursorRow = NSNotFound;
     _perfLoggingEnabled = getenv("COCOATERMINAL_PERF_LOG") != NULL;
     _perfLastLogTime = [NSDate timeIntervalSinceReferenceDate];
     [self rebuildTextAttributes];
@@ -423,6 +429,7 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family, BOOL
     _activeMouseButton = -1;
     _findLine = NSNotFound;
     _pendingDirtyRows = [[NSMutableIndexSet alloc] init];
+    _paintedCursorRow = NSNotFound;
     _perfLoggingEnabled = getenv("COCOATERMINAL_PERF_LOG") != NULL;
     _perfLastLogTime = [NSDate timeIntervalSinceReferenceDate];
     [self rebuildTextAttributes];
@@ -499,7 +506,7 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family, BOOL
   // Cmd+Shift so we never collide with terminal-control Ctrl+letter byte
   // translation in keyDown:.
   NSUInteger flags = [event modifierFlags];
-  if ((flags & NSCommandKeyMask) && (flags & NSShiftKeyMask)) {
+  if ((flags & NSEventModifierFlagCommand) && (flags & NSEventModifierFlagShift)) {
     NSString *base = [[event charactersIgnoringModifiers] lowercaseString];
     if ([base isEqualToString:@"c"]) {
       [self copySelection];
@@ -1219,6 +1226,15 @@ static std::uint32_t COTRGB(NSColor *color) {
       }
     }
   }
+  NSString *transportError = [_session transportError];
+  if ([transportError length]) {
+    [backgroundColor setFill];
+    NSRectFill(NSMakeRect(NSMinX([self bounds]), NSMinY([self bounds]), NSWidth([self bounds]), 22));
+    [transportError drawAtPoint:NSMakePoint(NSMinX([self bounds])+8, NSMinY([self bounds])+4)
+      withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:12],
+                       NSForegroundColorAttributeName:[NSColor redColor]}];
+  }
+
 }
 
 - (void)keyDown:(NSEvent *)event {
@@ -1323,17 +1339,17 @@ static std::uint32_t COTRGB(NSColor *color) {
   }
 
   // Treat Cmd as Ctrl-equivalent for terminal control bytes. On GNUstep on Linux,
-  // the physical Ctrl key is commonly mapped to NSCommandKeyMask; on macOS it maps
-  // to NSControlKeyMask. Either way, bare modifier+letter (no Shift) means a
+  // the physical Ctrl key is commonly mapped to NSEventModifierFlagCommand; on macOS it maps
+  // to NSEventModifierFlagControl. Either way, bare modifier+letter (no Shift) means a
   // terminal control byte. Shift-modified variants are reserved for app shortcuts.
   if ([self sendTerminalControlBytesForEvent:event debug:debugKeys]) {
     return;
   }
 
   NSUInteger flags = [event modifierFlags];
-  BOOL hasCtrl = (flags & NSControlKeyMask) != 0;
-  BOOL hasCmd = (flags & NSCommandKeyMask) != 0;
-  BOOL hasAlt = (flags & NSAlternateKeyMask) != 0;
+  BOOL hasCtrl = (flags & NSEventModifierFlagControl) != 0;
+  BOOL hasCmd = (flags & NSEventModifierFlagCommand) != 0;
+  BOOL hasAlt = (flags & NSEventModifierFlagOption) != 0;
 
   if (hasAlt && !hasCmd && !hasCtrl && [characters length] > 0) {
     NSMutableData *data = [NSMutableData dataWithCapacity:1 + [characters length]];
@@ -1356,14 +1372,14 @@ static std::uint32_t COTRGB(NSColor *color) {
   [[self window] makeFirstResponder:self];
   // Ctrl-click (Cmd-click on a Mac; GNUstep often reports the Ctrl key as Command) opens a link, even in a program
   // that takes the mouse.
-  if ([event modifierFlags] & (NSCommandKeyMask | NSControlKeyMask)) {
+  if ([event modifierFlags] & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) {
     NSURL *link = [self linkForEvent:event];
     if (link != nil) {
       [self openLink:link];
       return;
     }
   }
-  BOOL shift = ([event modifierFlags] & NSShiftKeyMask) != 0;
+  BOOL shift = ([event modifierFlags] & NSEventModifierFlagShift) != 0;
   BOOL hadSelection = _hasSelection;
   _hasSelection = NO;
   if ([_session isMouseReportingEnabled] && !shift) {
@@ -1767,14 +1783,14 @@ static std::uint32_t COTRGB(NSColor *color) {
     return;
   }
   NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
-  [pasteboard declareTypes:[NSArray arrayWithObject:NSStringPboardType] owner:nil];
-  [pasteboard setString:text forType:NSStringPboardType];
+  [pasteboard declareTypes:[NSArray arrayWithObject:COTPasteboardTypeString] owner:nil];
+  [pasteboard setString:text forType:COTPasteboardTypeString];
 }
 
 - (void)pasteFromClipboard {
   if (![_session allowsInput]) return;
   NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
-  NSString *text = [pasteboard stringForType:NSStringPboardType];
+  NSString *text = [pasteboard stringForType:COTPasteboardTypeString];
   if ([text length] == 0) {
     return;
   }
@@ -1782,9 +1798,8 @@ static std::uint32_t COTRGB(NSColor *color) {
   [normalized replaceOccurrencesOfString:@"\r\n" withString:@"\r" options:0 range:NSMakeRange(0, [normalized length])];
   [normalized replaceOccurrencesOfString:@"\n" withString:@"\r" options:0 range:NSMakeRange(0, [normalized length])];
   if ([_session isBracketedPasteEnabled]) {
-    [_session sendInput:[@"\033[200~" dataUsingEncoding:NSUTF8StringEncoding]];
-    [_session sendInput:[normalized dataUsingEncoding:NSUTF8StringEncoding]];
-    [_session sendInput:[@"\033[201~" dataUsingEncoding:NSUTF8StringEncoding]];
+    NSString *transaction = [NSString stringWithFormat:@"\033[200~%@\033[201~", normalized];
+    [_session sendInput:[transaction dataUsingEncoding:NSUTF8StringEncoding]];
   } else {
     [_session sendInput:[normalized dataUsingEncoding:NSUTF8StringEncoding]];
   }
@@ -1837,10 +1852,10 @@ static std::uint32_t COTRGB(NSColor *color) {
 - (BOOL)sendTerminalControlBytesForEvent:(NSEvent *)event debug:(BOOL)debugKeys {
   NSString *characters = [event characters];
   NSUInteger flags = [event modifierFlags];
-  BOOL hasCtrl = (flags & NSControlKeyMask) != 0;
-  BOOL hasCmd = (flags & NSCommandKeyMask) != 0;
-  BOOL hasShift = (flags & NSShiftKeyMask) != 0;
-  BOOL hasAlt = (flags & NSAlternateKeyMask) != 0;
+  BOOL hasCtrl = (flags & NSEventModifierFlagControl) != 0;
+  BOOL hasCmd = (flags & NSEventModifierFlagCommand) != 0;
+  BOOL hasShift = (flags & NSEventModifierFlagShift) != 0;
+  BOOL hasAlt = (flags & NSEventModifierFlagOption) != 0;
 
   if (!(hasCtrl || hasCmd) || hasShift || [characters length] == 0) {
     return NO;
@@ -1908,10 +1923,10 @@ static std::uint32_t COTRGB(NSColor *color) {
 
 - (BOOL)handleClipboardShortcut:(NSEvent *)event {
   NSUInteger flags = [event modifierFlags];
-  BOOL hasCmd = (flags & NSCommandKeyMask) != 0;
-  BOOL hasShift = (flags & NSShiftKeyMask) != 0;
+  BOOL hasCmd = (flags & NSEventModifierFlagCommand) != 0;
+  BOOL hasShift = (flags & NSEventModifierFlagShift) != 0;
   // Require Cmd+Shift so we never collide with terminal-control Ctrl+letter
-  // (on GNUstep the physical Ctrl key often delivers NSCommandKeyMask, so bare
+  // (on GNUstep the physical Ctrl key often delivers NSEventModifierFlagCommand, so bare
   // Cmd+letter must remain available as a terminal control byte).
   if (!hasCmd || !hasShift) {
     return NO;
@@ -1938,8 +1953,8 @@ static std::uint32_t COTRGB(NSColor *color) {
 
 - (BOOL)handleScrollbackShortcut:(NSEvent *)event {
   NSUInteger flags = [event modifierFlags];
-  BOOL hasCmd = (flags & NSCommandKeyMask) != 0;
-  BOOL hasShift = (flags & NSShiftKeyMask) != 0;
+  BOOL hasCmd = (flags & NSEventModifierFlagCommand) != 0;
+  BOOL hasShift = (flags & NSEventModifierFlagShift) != 0;
   if (!hasCmd && !hasShift) {
     return NO;
   }
@@ -2020,8 +2035,8 @@ static std::uint32_t COTRGB(NSColor *color) {
 
 - (BOOL)handleZoomShortcut:(NSEvent *)event {
   NSUInteger flags = [event modifierFlags];
-  BOOL ctrl = (flags & NSControlKeyMask) != 0;
-  BOOL cmd = (flags & NSCommandKeyMask) != 0;
+  BOOL ctrl = (flags & NSEventModifierFlagControl) != 0;
+  BOOL cmd = (flags & NSEventModifierFlagCommand) != 0;
   if ((!ctrl && !cmd) || COTIsAltGrText(event)) {
     return NO;  // AltGr+0 is } on a German layout, not "reset zoom"
   }
@@ -2248,12 +2263,20 @@ static std::uint32_t COTRGB(NSColor *color) {
     _pendingFullRedraw = NO;
     return;
   }
+  [[NSNotificationCenter defaultCenter] postNotificationName:COTTerminalViewDidUpdateScreenNotification object:self];
   if ([self isHiddenOrHasHiddenAncestor] || [self window] == nil) {
     [_pendingDirtyRows removeAllIndexes];
     _pendingFullRedraw = YES;
     return;
   }
 
+  // The cursor's old row and its new one join the rows whose text changed.
+  NSUInteger cursorRow = snapshot->viewportOffset == 0 && snapshot->cursorRow < snapshot->rows ? snapshot->cursorRow : NSNotFound;
+  if (_paintedCursorRow != cursorRow) {
+    if (_paintedCursorRow != NSNotFound && _paintedCursorRow < snapshot->rows) [_pendingDirtyRows addIndex:_paintedCursorRow];
+    if (cursorRow != NSNotFound) [_pendingDirtyRows addIndex:cursorRow];
+  }
+  _paintedCursorRow = cursorRow;
   NSUInteger dirtyCount = [_pendingDirtyRows count];
   BOOL fullRedraw = _pendingFullRedraw || dirtyCount == 0 || dirtyCount > MAX((NSUInteger)1, snapshot->rows / 2);
   [self recordPerfUpdateWithDirtyRowCount:(fullRedraw ? snapshot->rows : dirtyCount)];
@@ -2354,6 +2377,9 @@ static std::uint32_t COTRGB(NSColor *color) {
   [self scheduleScreenUpdate];
 }
 
+- (void)terminalSession:(COTTerminalSession *)session didEncounterTransportError:(NSString *)message {
+  (void)session; (void)message; [self setNeedsDisplay:YES];
+}
 - (void)terminalSession:(COTTerminalSession *)session didExitWithStatus:(int)status {
   (void)session;
   [[NSNotificationCenter defaultCenter] postNotificationName:COTTerminalViewDidExitNotification

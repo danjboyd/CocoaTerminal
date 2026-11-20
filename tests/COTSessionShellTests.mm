@@ -192,6 +192,37 @@ int main() {
 #endif
   }
 
+  // 5. The shell's environment: ours, without the multiplexer markers and credentials COTTerminalConfiguration says
+  //    are never passed on, plus the configured variables. (On Unix cot::SpawnPlan's own tests cover this.)
+  {
+#if defined(_WIN32)
+    _putenv_s("COT_ENV_KEPT", "kept-value");
+    _putenv_s("AIMGR_COT_TEST", "must-not-pass");
+    _putenv_s("COT_TEST_API_KEY", "must-not-pass");
+    _putenv_s("Cot_Mixed_Token", "must-not-pass");
+    COTTerminalConfiguration *configuration =
+      configurationWithCommand([NSArray arrayWithObjects:@"cmd.exe", @"/d", @"/c", @"set COT_ & set AIMGR_ & echo COT_ENV_DONE", nil]);
+    [configuration setEnvironment:[NSDictionary dictionaryWithObjectsAndKeys:@"configured-value", @"COT_ENV_CONFIGURED",
+                                                                              @"must-not-pass", @"COT_CONFIGURED_SECRET",
+                                                                              nil]];
+    [configuration setScrollbackLineLimit:2000];
+    COTTerminalSession *session = [[COTTerminalSession alloc] initWithConfiguration:configuration];
+    [session resizeToColumns:200 rows:60];
+    NSError *error = nil;
+    expect([session startWithError:&error], "the environment shell should start");
+    expect(runUntil(10, ^BOOL { return linesContain(session, @"COT_ENV_DONE"); }), "the environment should be listed");
+    NSString *all = [[session visibleLines] componentsJoinedByString:@"\n"];
+    if (getenv("COT_SHELL_TEST_DEBUG")) dumpLines(session);
+    expect([all rangeOfString:@"COT_ENV_KEPT=kept-value"].location != NSNotFound, "the shell inherits our environment");
+    expect([all rangeOfString:@"COT_ENV_CONFIGURED=configured-value"].location != NSNotFound,
+           "and gets the configured variables");
+    expect([all rangeOfString:@"must-not-pass"].location == NSNotFound,
+           "but not AIMGR_*, *_KEY, *_TOKEN or *_SECRET, from either source, in any case");
+    [session terminate];
+    [session release];
+#endif
+  }
+
   [pool drain];
   std::cout << "shell session checks pass\n";
   return 0;

@@ -38,6 +38,9 @@ typedef NS_ENUM(NSInteger, COTTerminalSizingPolicy) {
 @interface COTTerminalConfiguration : NSObject <NSCopying>
 
 @property (nonatomic, copy) NSArray<NSString *> *shellCommand;
+// Applied on top of the inherited process environment. Never passed to the
+// child, from either source: TMUX, TMUX_PANE, STY, WINDOWID, AIMGR_*, and any
+// name ending in _TOKEN, _SECRET or _KEY (the host app's credentials).
 @property (nonatomic, copy) NSDictionary<NSString *, NSString *> *environment;
 @property (nonatomic, copy) NSString *workingDirectory;
 @property (nonatomic, copy) NSString *terminalType;

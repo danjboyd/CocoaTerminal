@@ -105,6 +105,7 @@ else()
     target_link_libraries(CocoaTerminal PUBLIC util)  # forkpty
   else()
     target_link_libraries(CocoaTerminal PUBLIC shell32)  # ShellExecuteW opens links
+    target_link_libraries(CocoaTerminal PUBLIC imm32)  # placing the IME's composition window
   endif()
   target_link_libraries(CocoaTerminal PUBLIC dispatch)
 endif()
@@ -204,6 +205,14 @@ if(COCOATERMINAL_BUILD_TESTS)
   set_target_properties(CocoaTerminalShellIntegrationTests PROPERTIES LINKER_LANGUAGE OBJCXX)
   target_link_libraries(CocoaTerminalShellIntegrationTests PRIVATE CocoaTerminal::CocoaTerminal)
   add_test(NAME CocoaTerminalShellIntegrationTests COMMAND CocoaTerminalShellIntegrationTests)
+
+  add_executable(CocoaTerminalKeyboardLayoutTests tests/COTKeyboardLayoutTests.mm)
+  set_target_properties(CocoaTerminalKeyboardLayoutTests PROPERTIES LINKER_LANGUAGE OBJCXX)
+  target_link_libraries(CocoaTerminalKeyboardLayoutTests PRIVATE CocoaTerminal::CocoaTerminal)
+  if(WIN32)
+    target_link_libraries(CocoaTerminalKeyboardLayoutTests PRIVATE imm32)
+  endif()
+  add_test(NAME CocoaTerminalKeyboardLayoutTests COMMAND CocoaTerminalKeyboardLayoutTests)
 
   add_executable(CocoaTerminalCaptureTests tests/COTTerminalCaptureTests.mm)
   set_target_properties(CocoaTerminalCaptureTests PROPERTIES LINKER_LANGUAGE OBJCXX)

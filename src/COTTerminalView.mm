@@ -11,6 +11,7 @@
 
 #if defined(_WIN32)
 #include <shellapi.h>  // ShellExecuteW, for links
+#include <imm.h>  // placing the input method's composition window
 #endif
 
 #include <unordered_map>
@@ -127,6 +128,26 @@ static BOOL COTIsDefaultEmoji(UTF32Char c) {
 
 // Shift+Tab, however the backend reports it: Tab with Shift, or the back-tab character as the key itself (not as the
 // control character Ctrl+Y also makes, whose key is "y").
+// Text typed with AltGr: Windows reports AltGr as Ctrl+Alt, so a European layout's @, €, { or ä arrives with both,
+// and must be typed, not turned into a control byte. The layout made a printable character that isn't the key's
+// own (unmodified) one.
+static BOOL COTIsAltGrText(NSEvent *event) {
+  NSUInteger flags = [event modifierFlags];
+  if (!(flags & NSAlternateKeyMask) || !(flags & (NSControlKeyMask | NSCommandKeyMask))) {
+    return NO;
+  }
+  NSString *characters = [event characters];
+  NSString *base = [event charactersIgnoringModifiers];
+  if ([characters length] == 0) {
+    return NO;
+  }
+  unichar first = [characters characterAtIndex:0];
+  if (first < 0x20 || first == 0x7f || (first >= 0xF700 && first <= 0xF8FF)) {
+    return NO;  // a control character, or a function key
+  }
+  return ![characters isEqualToString:base] && ![[characters lowercaseString] isEqualToString:[base lowercaseString]];
+}
+
 static BOOL COTIsBackTab(NSEvent *event) {
   NSString *base = [event charactersIgnoringModifiers];
   unichar key = [base length] > 0 ? [base characterAtIndex:0] : 0;
@@ -417,6 +438,7 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family, BOOL
 - (void)dealloc {
   [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performPendingTerminalSizeUpdate) object:nil];
   [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performPendingScreenUpdate) object:nil];
+  [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(updateInputMethodPosition) object:nil];
   [[NSNotificationCenter defaultCenter] removeObserver:self];
   [_session setDelegate:nil];
   [_session release];
@@ -502,6 +524,7 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family, BOOL
 
 - (BOOL)becomeFirstResponder {
   [self setNeedsDisplay:YES];
+  [self performSelector:@selector(updateInputMethodPosition) withObject:nil afterDelay:0];  // once it has the focus
   if ([_session isFocusReportingEnabled]) {
     [_session sendInput:[@"\033[I" dataUsingEncoding:NSUTF8StringEncoding]];
   }
@@ -1822,6 +1845,9 @@ static std::uint32_t COTRGB(NSColor *color) {
   if (!(hasCtrl || hasCmd) || hasShift || [characters length] == 0) {
     return NO;
   }
+  if (COTIsAltGrText(event)) {
+    return NO;  // text from the layout's AltGr level (Windows reports AltGr as Ctrl+Alt): typed as it is
+  }
 
   unichar first = [characters characterAtIndex:0];
   if (first >= 0x01 && first <= 0x1f) {
@@ -1996,8 +2022,8 @@ static std::uint32_t COTRGB(NSColor *color) {
   NSUInteger flags = [event modifierFlags];
   BOOL ctrl = (flags & NSControlKeyMask) != 0;
   BOOL cmd = (flags & NSCommandKeyMask) != 0;
-  if (!ctrl && !cmd) {
-    return NO;
+  if ((!ctrl && !cmd) || COTIsAltGrText(event)) {
+    return NO;  // AltGr+0 is } on a German layout, not "reset zoom"
   }
 
   NSString *characters = [event characters];
@@ -2243,6 +2269,56 @@ static std::uint32_t COTRGB(NSColor *color) {
   }
   [_pendingDirtyRows removeAllIndexes];
   _pendingFullRedraw = NO;
+  [self updateInputMethodPositionWithSnapshot:snapshot];
+}
+
+- (void)updateInputMethodPosition {
+  [self updateInputMethodPositionWithSnapshot:[_session currentSnapshot]];
+}
+
+// Where an input method shows what's being composed (Chinese, Japanese, Korean...): at the terminal's cursor. GNUstep's
+// Windows back end commits IME text as key events but never places the composition window, so the IME put it at its
+// default place, away from the text. Only while the view has the focus.
+- (void)updateInputMethodPositionWithSnapshot:(COTTerminalSnapshot *)snapshot {
+#if defined(_WIN32)
+  NSWindow *window = [self window];
+  if (snapshot == nil || window == nil || [window firstResponder] != self) {
+    return;
+  }
+  HWND hwnd = (HWND)(intptr_t)[window windowNumber];
+  HIMC context = hwnd != NULL ? ImmGetContext(hwnd) : NULL;
+  if (context == NULL) {
+    return;
+  }
+  COTTerminalTheme *theme = [[_session configuration] theme];
+  NSFont *font = [theme font];
+  CGFloat lineHeight = _lineHeight > 0 ? _lineHeight : [font ascender] - [font descender] + [theme lineSpacing];
+  CGFloat cellWidth = _cellWidth > 0 ? _cellWidth : [@"M" sizeWithAttributes:_textAttributes].width;
+  NSEdgeInsets insets = [theme contentInsets];
+  // The cursor cell's top left, in the view, then the window, then the screen (GNUstep's: y up from the bottom of the
+  // primary screen), then Windows' screen (y down from its top) and the window's client area.
+  NSPoint topLeft = NSMakePoint(insets.left + (CGFloat)snapshot->cursorColumn * cellWidth,
+                                NSMaxY([self bounds]) - insets.top - (CGFloat)snapshot->cursorRow * lineHeight);
+  NSPoint inWindow = [self convertPoint:topLeft toView:nil];
+  NSPoint onScreen = [window convertBaseToScreen:inWindow];
+  POINT point;
+  point.x = (LONG)lround(onScreen.x);
+  point.y = (LONG)lround((CGFloat)GetSystemMetrics(SM_CYSCREEN) - onScreen.y);
+  ScreenToClient(hwnd, &point);
+  COMPOSITIONFORM composition;
+  composition.dwStyle = CFS_POINT;
+  composition.ptCurrentPos = point;
+  ImmSetCompositionWindow(context, &composition);
+  CANDIDATEFORM candidates;  // the list of choices below the line being composed
+  candidates.dwIndex = 0;
+  candidates.dwStyle = CFS_CANDIDATEPOS;
+  candidates.ptCurrentPos.x = point.x;
+  candidates.ptCurrentPos.y = point.y + (LONG)lround(lineHeight);
+  ImmSetCandidateWindow(context, &candidates);
+  ImmReleaseContext(hwnd, context);
+#else
+  (void)snapshot;
+#endif
 }
 
 - (NSDictionary *)performanceSnapshot {

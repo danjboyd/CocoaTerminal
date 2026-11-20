@@ -122,6 +122,26 @@ static BOOL COTIsDefaultEmoji(UTF32Char c) {
 
 // Shift+Tab, however the backend reports it: Tab with Shift, or the back-tab character as the key itself (not as the
 // control character Ctrl+Y also makes, whose key is "y").
+// Text typed with AltGr: Windows reports AltGr as Ctrl+Alt, so a European layout's @, €, { or ä arrives with both,
+// and must be typed, not turned into a control byte. The layout made a printable character that isn't the key's
+// own (unmodified) one.
+static BOOL COTIsAltGrText(NSEvent *event) {
+  NSUInteger flags = [event modifierFlags];
+  if (!(flags & NSAlternateKeyMask) || !(flags & (NSControlKeyMask | NSCommandKeyMask))) {
+    return NO;
+  }
+  NSString *characters = [event characters];
+  NSString *base = [event charactersIgnoringModifiers];
+  if ([characters length] == 0) {
+    return NO;
+  }
+  unichar first = [characters characterAtIndex:0];
+  if (first < 0x20 || first == 0x7f || (first >= 0xF700 && first <= 0xF8FF)) {
+    return NO;  // a control character, or a function key
+  }
+  return ![characters isEqualToString:base] && ![[characters lowercaseString] isEqualToString:[base lowercaseString]];
+}
+
 static BOOL COTIsBackTab(NSEvent *event) {
   NSString *base = [event charactersIgnoringModifiers];
   unichar key = [base length] > 0 ? [base characterAtIndex:0] : 0;
@@ -1529,6 +1549,9 @@ static std::uint32_t COTRGB(NSColor *color) {
   if (!(hasCtrl || hasCmd) || hasShift || [characters length] == 0) {
     return NO;
   }
+  if (COTIsAltGrText(event)) {
+    return NO;  // text from the layout's AltGr level (Windows reports AltGr as Ctrl+Alt): typed as it is
+  }
 
   unichar first = [characters characterAtIndex:0];
   if (first >= 0x01 && first <= 0x1f) {
@@ -1657,8 +1680,8 @@ static std::uint32_t COTRGB(NSColor *color) {
   NSUInteger flags = [event modifierFlags];
   BOOL ctrl = (flags & NSControlKeyMask) != 0;
   BOOL cmd = (flags & NSCommandKeyMask) != 0;
-  if (!ctrl && !cmd) {
-    return NO;
+  if ((!ctrl && !cmd) || COTIsAltGrText(event)) {
+    return NO;  // AltGr+0 is } on a German layout, not "reset zoom"
   }
 
   NSString *characters = [event characters];

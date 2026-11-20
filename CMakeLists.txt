@@ -187,6 +187,11 @@ if(COCOATERMINAL_BUILD_TESTS)
   target_link_libraries(CocoaTerminalViewStyleTests PRIVATE CocoaTerminal::CocoaTerminal)
   add_test(NAME CocoaTerminalViewStyleTests COMMAND CocoaTerminalViewStyleTests)
 
+  add_executable(CocoaTerminalKeyboardLayoutTests tests/COTKeyboardLayoutTests.mm)
+  set_target_properties(CocoaTerminalKeyboardLayoutTests PROPERTIES LINKER_LANGUAGE OBJCXX)
+  target_link_libraries(CocoaTerminalKeyboardLayoutTests PRIVATE CocoaTerminal::CocoaTerminal)
+  add_test(NAME CocoaTerminalKeyboardLayoutTests COMMAND CocoaTerminalKeyboardLayoutTests)
+
   add_executable(CocoaTerminalCaptureTests tests/COTTerminalCaptureTests.mm)
   set_target_properties(CocoaTerminalCaptureTests PROPERTIES LINKER_LANGUAGE OBJCXX)
   target_link_libraries(CocoaTerminalCaptureTests PRIVATE CocoaTerminal::CocoaTerminal)

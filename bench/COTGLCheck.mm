@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -364,32 +365,42 @@ static void RunChecks(BOOL child, int cycles) {
     Report("FAIL", name, [NSString stringWithFormat:@"re-added view shows %@", Hex(rgb)]);
   }
 
-  // 7. Clipped by a scroll view: scrolled half out of sight, it mustn't draw over the scroller or outside the clip.
-  NSScrollView *scroll = [[[NSScrollView alloc] initWithFrame:NSMakeRect(380, 40, 200, 150)] autorelease];
+  // 7. Clipped by a scroll view: scrolled half out of sight, it mustn't draw over the scroller or outside the clip. In
+  // a window of its own, so no other GL view is under the points it reads.
+  NSWindow *scrollWindow = MakeWindow(NSMakeRect(80, 120, 300, 260), @"GL check scroll");
+  NSScrollView *scroll = [[[NSScrollView alloc] initWithFrame:NSMakeRect(40, 40, 200, 150)] autorelease];
   [scroll setHasVerticalScroller:YES];
   NSView *document = [[[NSView alloc] initWithFrame:NSMakeRect(0, 0, 180, 600)] autorelease];
   NSView *scrolled = MakeGLView(child, NSMakeRect(0, 200, 180, 200), 0, 1, 1);  // cyan
   [document addSubview:scrolled];
   [scroll setDocumentView:document];
-  [[window contentView] addSubview:scroll];
-  Redraw(window);
-  [[scroll contentView] scrollToPoint:NSMakePoint(0, 300)];  // the cyan view's top half now above the visible area
+  [[scrollWindow contentView] addSubview:scroll];
+  Redraw(scrollWindow);
+  // Scrolled so the visible area starts halfway up the cyan view: its lower half (or upper, if the document is
+  // flipped) is now outside the scroll view.
+  [[scroll contentView] scrollToPoint:NSMakePoint(0, 300)];
   [scroll reflectScrolledClipView:[scroll contentView]];
-  Redraw(window);
+  Redraw(scrollWindow);
   NSRect scrollInWindow = [scroll convertRect:[scroll bounds] toView:nil];
-  NSPoint above = NSMakePoint(NSMidX(scrollInWindow) - 10, NSMaxY(scrollInWindow) + 8);  // just above the scroll view
+  // Just outside the scroll view, above and below it: neither may be cyan.
+  NSPoint above = NSMakePoint(NSMidX(scrollInWindow) - 10, NSMaxY(scrollInWindow) + 8);
+  NSPoint below = NSMakePoint(NSMidX(scrollInWindow) - 10, NSMinY(scrollInWindow) - 8);
   snprintf(name, sizeof name, "%s: clipped by a scroll view", kind);
-  BOOL leaked = ScreenAt(window, above, rgb) && Near(rgb, 0, 255, 255);
+  BOOL leaked = ScreenAt(scrollWindow, above, rgb) && Near(rgb, 0, 255, 255);
   unsigned char aboveRGB[3] = {rgb[0], rgb[1], rgb[2]};
+  leaked = (ScreenAt(scrollWindow, below, rgb) && Near(rgb, 0, 255, 255)) || leaked;
+  if (Near(rgb, 0, 255, 255)) memcpy(aboveRGB, rgb, 3);
   NSRect visible = [scrolled convertRect:[scrolled visibleRect] toView:nil];
-  BOOL shows = !NSIsEmptyRect(visible) && ScreenAt(window, NSMakePoint(NSMidX(visible), NSMidY(visible)), rgb) && Near(rgb, 0, 255, 255);
+  BOOL shows = !NSIsEmptyRect(visible) && ScreenAt(scrollWindow, NSMakePoint(NSMidX(visible), NSMidY(visible)), rgb) &&
+               Near(rgb, 0, 255, 255);
   if (!leaked && shows) {
     Report("PASS", name, @"visible part drawn, nothing outside the clip");
   } else {
-    Report("FAIL", name, [NSString stringWithFormat:@"visible part %@ (want cyan); just above the scroll view %@ (want not cyan)",
+    Report("FAIL", name, [NSString stringWithFormat:@"visible part %@ (want cyan); just outside the scroll view %@ (want not cyan)",
                           Hex(rgb), Hex(aboveRGB)]);
   }
-  [scroll removeFromSuperview];
+  [scrollWindow close];
+  [scrollWindow release];
   Redraw(window);
 
   // 8. Two in one window, and one in a second window.

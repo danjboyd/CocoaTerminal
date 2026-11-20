@@ -71,6 +71,15 @@ if(COCOATERMINAL_GL_RENDERER AND NOT APPLE)
     target_include_directories(CocoaTerminal PRIVATE ${COT_EGL_INCLUDE_DIRS})
     target_link_directories(CocoaTerminal PUBLIC ${COT_EGL_LIBRARY_DIRS})
     target_link_libraries(CocoaTerminal PUBLIC ${COT_EGL_LIBRARIES})
+    # GLX, to draw straight into an NSOpenGLView (GNUstep's x11 back end draws it with GLX). Optional: without it the
+    # renderer draws off screen through EGL and the view shows the image.
+    pkg_check_modules(COT_GLX QUIET gl)
+    if(COT_GLX_FOUND)
+      target_compile_definitions(CocoaTerminal PRIVATE COCOATERMINAL_GLX=1)
+      target_include_directories(CocoaTerminal PRIVATE ${COT_GLX_INCLUDE_DIRS})
+      target_link_directories(CocoaTerminal PUBLIC ${COT_GLX_LIBRARY_DIRS})
+      target_link_libraries(CocoaTerminal PUBLIC ${COT_GLX_LIBRARIES})
+    endif()
   endif()
 endif()
 

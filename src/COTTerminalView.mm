@@ -278,8 +278,14 @@ static BOOL COTGLSurfaceUsable(void) {
     } else {
 #if defined(_WIN32)
       usable = [NSOpenGLView instancesRespondToSelector:@selector(_setNeedsDrawableUpdate)] ? 1 : 0;
+#elif defined(COCOATERMINAL_GLX)
+      // X11: GNUstep with the glview-visibility fix (the gui's part; the back end's keeps the child window with the
+      // view), and a back end built with GLX, which is what gives NSOpenGLView a pixel format at all. Without either
+      // the window path can't work, and Automatic draws with Cairo.
+      usable = ([NSOpenGLView instancesRespondToSelector:@selector(_setNeedsDrawableUpdate)] &&
+                [NSOpenGLView defaultPixelFormat] != nil) ? 1 : 0;
 #else
-      usable = 0;  // needs a GLX context for the renderer (COTGLContextEGL.cpp)
+      usable = 0;  // built without GLX: no way to draw into an NSOpenGLView
 #endif
     }
   }

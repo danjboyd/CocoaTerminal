@@ -11,6 +11,9 @@
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#if defined(COCOATERMINAL_GLX)
+#include <GL/glx.h>
+#endif
 
 namespace cot {
 
@@ -126,14 +129,50 @@ std::unique_ptr<GLContext> MakeGLContext(std::string *error) {
 
 bool SetCurrentSwapInterval(int interval) {
   EGLDisplay display = eglGetCurrentDisplay();
-  return display != EGL_NO_DISPLAY && eglSwapInterval(display, interval) == EGL_TRUE;
+  if (display != EGL_NO_DISPLAY) {
+    return eglSwapInterval(display, interval) == EGL_TRUE;
+  }
+#if defined(COCOATERMINAL_GLX)
+  // An NSOpenGLView's GLX context: Mesa's swap interval applies to its current drawable.
+  if (glXGetCurrentContext() != NULL) {
+    typedef int (*SwapIntervalMESA)(unsigned int);
+    auto setInterval = (SwapIntervalMESA)glXGetProcAddressARB(reinterpret_cast<const GLubyte *>("glXSwapIntervalMESA"));
+    return setInterval != nullptr && interval >= 0 && setInterval((unsigned int)interval) == 0;
+  }
+#endif
+  return false;
 }
 
-// GNUstep's NSOpenGLView on X11 uses GLX, not EGL: drawing into it needs a GLX version of this, not written yet.
+#if defined(COCOATERMINAL_GLX)
+// GNUstep's NSOpenGLView on X11 draws with GLX: the view makes its context current before it draws, so the renderer
+// uses that one (as on Windows with WGL) and only checks it's still current.
+class CurrentGLXContext : public GLContext {
+public:
+  explicit CurrentGLXContext(GLXContext context) : _context(context) {}
+  bool makeCurrent() override { return glXGetCurrentContext() == _context; }
+  void *proc(const char *name) override {
+    return (void *)glXGetProcAddressARB(reinterpret_cast<const GLubyte *>(name));
+  }
+  std::string description() const override { return "GLX (NSOpenGLView)"; }
+
+private:
+  GLXContext _context;
+};
+
 std::unique_ptr<GLContext> MakeCurrentGLContext(std::string *error) {
-  *error = "drawing into an NSOpenGLView isn't done on this platform yet (needs GLX)";
+  GLXContext current = glXGetCurrentContext();
+  if (current == NULL) {
+    *error = "no GLX context is current";
+    return nullptr;
+  }
+  return std::unique_ptr<GLContext>(new CurrentGLXContext(current));
+}
+#else
+std::unique_ptr<GLContext> MakeCurrentGLContext(std::string *error) {
+  *error = "built without GLX (pkg-config gl not found), so OpenGL can't draw into an NSOpenGLView";
   return nullptr;
 }
+#endif
 
 }  // namespace cot
 

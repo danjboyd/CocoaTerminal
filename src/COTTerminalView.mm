@@ -753,6 +753,22 @@ static NSString *COTFallbackFontName(UTF32Char character, NSString *family, BOOL
   if (sequence == nil && COTIsBackTab(event)) {
     sequence = @"\033[Z";
   }
+  // The Backspace key, whichever of BS or DEL the backend reports it as: DEL, and ^H with Ctrl, as xterm and Windows
+  // Terminal send. ^H for plain Backspace deletes a whole word in PowerShell on a Windows server (its console reads ^H as
+  // Ctrl+Backspace). Ctrl+H itself arrives with "h" as its base character, so it isn't caught here.
+  if (sequence == nil && [baseCharacters length] > 0) {
+    unichar base = [baseCharacters characterAtIndex:0];
+    if (base == 0x08 || base == 0x7f) {
+      NSUInteger flags = [event modifierFlags];
+      if (flags & (NSControlKeyMask | NSCommandKeyMask)) {
+        sequence = @"\b";
+      } else if (flags & NSAlternateKeyMask) {
+        sequence = @"\033\177";
+      } else {
+        sequence = @"\177";
+      }
+    }
+  }
   switch (COTMacKeyCode(event)) {
   case 123:
     if (sequence == nil) { sequence = @"\033[D"; }

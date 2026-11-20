@@ -80,12 +80,16 @@ int main() {
     Key([NSString stringWithFormat:@"%C", (unichar)NSF1FunctionKey], [NSString stringWithFormat:@"%C", (unichar)NSF1FunctionKey], 67, NSFunctionKeyMask),
     Key([NSString stringWithFormat:@"%C", (unichar)NSF5FunctionKey], [NSString stringWithFormat:@"%C", (unichar)NSF5FunctionKey], 71, NSFunctionKeyMask),
     Key([NSString stringWithFormat:@"%C", (unichar)NSF12FunctionKey], [NSString stringWithFormat:@"%C", (unichar)NSF12FunctionKey], 96, NSFunctionKeyMask),
-    Key(@"\t", @"\t", 23, shift), Key(@"\t", @"\t", 23, 0), nil];
+    Key(@"\t", @"\t", 23, shift), Key(@"\t", @"\t", 23, 0),
+    // X11 keycode 22: Backspace, whether the backend reports it as BS or DEL; then Ctrl+Backspace, Alt+Backspace, and
+    // Ctrl+H (43 is h), which stays ^H.
+    Key(@"\b", @"\b", 22, 0), Key(@"\177", @"\177", 22, 0), Key(@"\b", @"\b", 22, ctrl),
+    Key(@"\177", @"\177", 22, NSAlternateKeyMask), Key(@"\b", @"h", 43, ctrl), nil];
   for (NSEvent *event in keys) [view keyDown:event];
   [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:1.0]];
 
   NSData *got = [NSData dataWithContentsOfFile:out];
-  NSData *want = [@"a|b\\c~d`e!@{}\x12\x11\x19\033OP\033[15~\033[24~\033[Z\t" dataUsingEncoding:NSUTF8StringEncoding];
+  NSData *want = [@"a|b\\c~d`e!@{}\x12\x11\x19\033OP\033[15~\033[24~\033[Z\t\177\177\b\033\177\b" dataUsingEncoding:NSUTF8StringEncoding];
   std::cout << "pty got " << [got length] << " bytes: " << [[[[NSString alloc] initWithData:got encoding:NSUTF8StringEncoding] autorelease] UTF8String] << "\n";
   expect([got isEqualToData:want], "each key's own bytes reach the pty: | and \\ aren't Backspace, Ctrl+R/Q/Y are control bytes");
   expect([[[[view session] configuration] theme] fontSize] == fontSize, "Ctrl+Q / Ctrl+R / Ctrl+Y don't zoom");

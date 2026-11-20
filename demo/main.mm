@@ -8,6 +8,15 @@
 #include <math.h>
 #include <stdio.h>
 
+// The configured renderer, as the demo's config names it.
+static NSString *COTRendererName(COTTerminalRenderer renderer) {
+  switch (renderer) {
+  case COTTerminalRendererOpenGL: return @"opengl";
+  case COTTerminalRendererCairo: return @"cairo";
+  default: return @"auto";
+  }
+}
+
 static NSString *const COTScenarioDefault = @"smoke";
 static NSString *const COTScenarioSentinelPrefix = @"COT_SCENARIO_DONE:";
 
@@ -575,7 +584,7 @@ static NSString *COTPythonScenarioScript(NSString *body) {
   const char *rendererOverride = getenv("COCOATERMINAL_RENDERER");
   fprintf(stderr, "[CocoaTerminalDemo] renderer: %s (configured %s%s%s; OpenGL presentation: %s)\n",
           [[performance objectForKey:@"renderer"] UTF8String],
-          [[[_terminalView session] configuration] renderer] == COTTerminalRendererOpenGL ? "opengl" : "cairo",
+          [COTRendererName([[[_terminalView session] configuration] renderer]) UTF8String],
           rendererOverride != NULL ? ", COCOATERMINAL_RENDERER=" : "", rendererOverride != NULL ? rendererOverride : "",
           [[performance objectForKey:@"glPresentation"] UTF8String]);
 
@@ -1102,7 +1111,7 @@ static NSString *COTPythonScenarioScript(NSString *body) {
   [state appendFormat:@"line_spacing=%.1f\n", [theme lineSpacing]];
   [state appendFormat:@"opacity=%.2f\n", [theme opacity]];
   [state appendFormat:@"renderer_requested=%@\n",
-                      [[[_terminalView session] configuration] renderer] == COTTerminalRendererOpenGL ? @"opengl" : @"cairo"];
+                      COTRendererName([[[_terminalView session] configuration] renderer])];
   [state appendFormat:@"gl_presentation=%@\n", [[_terminalView performanceSnapshot] objectForKey:@"glPresentation"]];
   [state appendFormat:@"renderer=%@\n", [[_terminalView performanceSnapshot] objectForKey:@"renderer"]];
   [state appendFormat:@"zoom_baseline_size=%.1f\n", _zoomBaselineSize];

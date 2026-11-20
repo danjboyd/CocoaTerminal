@@ -20,10 +20,15 @@ typedef NS_ENUM(NSInteger, COTTerminalExitBehavior) {
 };
 
 // How the view draws: Cairo (GNUstep's own drawing) or OpenGL. OpenGL falls back to Cairo, saying why on stderr, when
-// the machine has no OpenGL 3.3. The COCOATERMINAL_RENDERER environment variable ("cairo" or "gl") overrides it.
+// the machine has no OpenGL 3.3. Automatic, the default, uses OpenGL only where it can draw straight into the window
+// (an NSOpenGLView GNUstep keeps with the view: on Windows, GNUstep with the glview-visibility fix) and the theme is
+// opaque, and Cairo otherwise: drawn through an image, OpenGL costs about 5-6 ms a frame whatever the screen holds,
+// which beats Cairo on colour-heavy screens but not on plain text. The COCOATERMINAL_RENDERER environment variable
+// ("cairo", "gl" or "auto") overrides it.
 typedef NS_ENUM(NSInteger, COTTerminalRenderer) {
   COTTerminalRendererCairo = 0,
   COTTerminalRendererOpenGL = 1,
+  COTTerminalRendererAutomatic = 2,
 };
 
 typedef NS_ENUM(NSInteger, COTTerminalInputPolicy) {

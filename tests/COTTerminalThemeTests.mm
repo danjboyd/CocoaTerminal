@@ -31,7 +31,7 @@ int main() {
   expect([theme cursorStyle] == COTTerminalCursorStyleBlock, "unexpected default cursor style");
   expect([[configuration terminalType] isEqualToString:@"xterm-256color"], "unexpected default terminal type");
   expect([configuration exitBehavior] == COTTerminalExitBehaviorKeepOpen, "unexpected default exit behavior");
-  expect([configuration renderer] == COTTerminalRendererCairo, "the renderer should default to Cairo");
+  expect([configuration renderer] == COTTerminalRendererAutomatic, "the renderer should default to Automatic");
   expect([[[configuration environment] objectForKey:@"TERM"] isEqualToString:@"xterm-256color"], "TERM should default to xterm-256color");
   expect([[[configuration environment] objectForKey:@"COLORTERM"] isEqualToString:@"truecolor"], "COLORTERM should default to truecolor");
   expect([theme backgroundColor] == [configuration backgroundColor], "background compatibility accessor is not theme-backed");

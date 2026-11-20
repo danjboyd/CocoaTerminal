@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (C) 2026 Daniel Boyd
 //
-// Do OpenGL views work inside GNUstep windows on Windows, reliably enough for a terminal view? Not a unit test: it
-// opens real windows, reads what the screen really shows (GDI, not GNUstep's own buffer), clicks with real input, and
-// prints PASS / FAIL / INFO for each check.
+// Do OpenGL views work inside GNUstep windows on Windows and X11, reliably enough for a terminal view? Not a unit
+// test: it opens real windows, reads what the screen really shows (GDI or the X root window, not GNUstep's own
+// buffer), clicks with real input (SendInput or XTest), and prints PASS / FAIL / INFO for each check.
 //
 // Two ways to put OpenGL in a view are checked:
-//   child:     NSOpenGLView. GNUstep's Windows backend makes it a child window over the GNUstep window.
+//   child:     NSOpenGLView. GNUstep's Windows and X11 backends make it a child window over the GNUstep window.
 //   offscreen: an ordinary NSView that draws a frame rendered by OpenGL off-screen (a framebuffer object in a hidden
 //              context) and read back. No child window; costs a readback and a blit per frame.
 //
-//   CocoaTerminalGLCheck [--cycles N] [--width W --height H]   (put Mesa's opengl32.dll beside it for modern GL)
+//   CocoaTerminalGLCheck [--cycles N] [--width W --height H] [--only child|offscreen|cost]
+//   (Windows: put Mesa's opengl32.dll beside it for modern GL. X11: run it on a display with GLX and no compositor,
+//   such as Xvfb +extension GLX; the X11 helpers are in COTGLCheckX11.cpp.)
 
 #import <AppKit/AppKit.h>
 
@@ -21,7 +23,7 @@
 #include <string>
 #include <vector>
 
-#if defined(_WIN32)
+#if defined(_WIN32) || !defined(__APPLE__)
 #include <GL/gl.h>
 extern "C" {
 int COTGLScreenPixel(void *window, double x, double y, unsigned char rgb[3]);
@@ -29,7 +31,12 @@ int COTGLClick(void *window, double x, double y);
 int COTGLPointVisible(void *window, double x, double y);
 int COTGLSaveWindow(void *window, const char *path);
 int COTGLKey(void *window, unsigned short vk);
+#if defined(_WIN32)
 void COTGLResources(unsigned long *gdi, unsigned long *user, unsigned long *handles, double *privateMB);
+#else
+void COTGLX11SetDisplay(void *display);
+void COTGLX11Resources(void *owner, unsigned long *gdi, unsigned long *user, unsigned long *handles, double *privateMB);
+#endif
 int COTGLChildWindowCount(void *window);
 void *COTGLOffscreenCreate(int width, int height, char *message, int messageLength);
 void COTGLOffscreenRender(void *handle, float red, float green, float blue, int cells, unsigned char *pixels);
@@ -37,7 +44,34 @@ void COTGLOffscreenDestroy(void *handle);
 }
 #endif
 
+#if !defined(_WIN32)
+#import <GNUstepGUI/GSDisplayServer.h>
+#endif
+
 static int gFailures = 0;
+
+// The native window the helpers take: the HWND on Windows (GNUstep's window number), the X window on X11.
+static void *NativeWindow(NSWindow *window) {
+#if defined(_WIN32)
+  return (void *)(intptr_t)[window windowNumber];
+#else
+  return [GSCurrentServer() windowDevice:[window windowNumber]];
+#endif
+}
+
+#if defined(_WIN32)
+static const char *kResourceFormat = "GDI %lu->%lu, USER %lu->%lu, handles %lu->%lu";
+static void Resources(NSWindow *window, unsigned long *gdi, unsigned long *user, unsigned long *handles, double *mb) {
+  (void)window;
+  COTGLResources(gdi, user, handles, mb);
+}
+#else
+// X resources of this client: windows; pixmaps, GCs, pictures and the rest; all of them.
+static const char *kResourceFormat = "X non-window resources %lu->%lu, X windows %lu->%lu, X resources %lu->%lu";
+static void Resources(NSWindow *window, unsigned long *gdi, unsigned long *user, unsigned long *handles, double *mb) {
+  COTGLX11Resources(NativeWindow(window), gdi, user, handles, mb);
+}
+#endif
 
 static void Report(const char *status, const char *check, NSString *detail) {
   printf("%-5s %-34s %s\n", status, check, [detail UTF8String]);
@@ -184,14 +218,25 @@ static NSString *Hex(const unsigned char rgb[3]) {
 
 // What the screen shows at the centre of a view's rect (in its window), or at a given point in the window.
 // GNUstep's window coordinates include the window's border; Win32's client area doesn't. The content view's origin in
-// window coordinates is that border.
+// window coordinates is that border. On X11 the X window is the content area when the window manager draws the
+// decorations, and the whole frame when GNUstep does.
 static NSPoint ClientPoint(NSWindow *window, NSPoint base) {
   NSPoint inset = [[window contentView] frame].origin;
+#if !defined(_WIN32)
+  if (![GSCurrentServer() handlesWindowDecorations]) inset = NSZeroPoint;
+#endif
   return NSMakePoint(base.x - inset.x, base.y - inset.y);
 }
 static BOOL ScreenAt(NSWindow *window, NSPoint base, unsigned char rgb[3]) {
   NSPoint p = ClientPoint(window, base);
-  return COTGLScreenPixel((void *)(intptr_t)[window windowNumber], p.x, p.y, rgb);
+#if !defined(_WIN32)
+  // Without a compositor X can't show a covered window (Windows' PrintWindow can), so bring it to the front first.
+  if (!COTGLPointVisible(NativeWindow(window), p.x, p.y)) {
+    [window orderFrontRegardless];
+    Spin(0.3);
+  }
+#endif
+  return COTGLScreenPixel(NativeWindow(window), p.x, p.y, rgb);
 }
 static NSPoint CentreInWindow(NSView *view) {
   NSRect r = [view convertRect:[view bounds] toView:nil];
@@ -279,7 +324,7 @@ static void RunChecks(BOOL child, int cycles) {
     [gl display];
     Spin(1.0);
   }
-  if (getenv("GLCHECK_SAVE")) COTGLSaveWindow((void *)(intptr_t)[window windowNumber], getenv("GLCHECK_SAVE"));
+  if (getenv("GLCHECK_SAVE")) COTGLSaveWindow(NativeWindow(window), getenv("GLCHECK_SAVE"));
   NSRect inWindow = [gl convertRect:[gl bounds] toView:nil];
   snprintf(name, sizeof name, "%s: follows a resize", kind);
   BOOL farCorner = ScreenAt(window, NSMakePoint(NSMaxX(inWindow) - 6, NSMaxY(inWindow) - 6), rgb) && Near(rgb, 255, 0, 255);
@@ -456,26 +501,26 @@ static void RunChecks(BOOL child, int cycles) {
   [window makeKeyAndOrderFront:nil];
   Spin(0.3);
   NSPoint visibleAt = ClientPoint(window, CentreInWindow(gl));
-  if (child && !COTGLPointVisible((void *)(intptr_t)[window windowNumber], visibleAt.x, visibleAt.y)) {
+  if (child && !COTGLPointVisible(NativeWindow(window), visibleAt.x, visibleAt.y)) {
     Report("SKIP", "child: real click and key", @"another window covers this one on screen, so real input can't reach it");
   } else if (child) {
     GLChildView *v = (GLChildView *)gl;
     NSUInteger clicks = v.mouseDowns;
     NSPoint p = ClientPoint(window, CentreInWindow(gl));
-    COTGLClick((void *)(intptr_t)[window windowNumber], p.x, p.y);
+    COTGLClick(NativeWindow(window), p.x, p.y);
     Spin(0.6);
     snprintf(name, sizeof name, "%s: gets a real click", kind);
     Report(v.mouseDowns > clicks ? "PASS" : "FAIL", name,
            [NSString stringWithFormat:@"mouseDown: %lu time(s)", (unsigned long)(v.mouseDowns - clicks)]);
     [window makeFirstResponder:v];
     NSUInteger keys = v.keyDowns;
-    COTGLKey((void *)(intptr_t)[window windowNumber], 'A');
+    COTGLKey(NativeWindow(window), 'A');
     Spin(0.6);
     snprintf(name, sizeof name, "%s: gets a real key", kind);
     Report(v.keyDowns > keys ? "PASS" : "FAIL", name,
            [NSString stringWithFormat:@"keyDown: %lu time(s)", (unsigned long)(v.keyDowns - keys)]);
     Report("INFO", "child: child windows", [NSString stringWithFormat:@"%d child window(s) in the GL window",
-                                            COTGLChildWindowCount((void *)(intptr_t)[window windowNumber])]);
+                                            COTGLChildWindowCount(NativeWindow(window))]);
   }
 
   // 12. Leaks: create, show, draw and destroy it many times.
@@ -490,7 +535,7 @@ static void RunChecks(BOOL child, int cycles) {
     }
   }
   Spin(0.3);
-  COTGLResources(&gdi0, &user0, &handles0, &mem0);
+  Resources(window, &gdi0, &user0, &handles0, &mem0);
   NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
   for (int i = 0; i < cycles; i++) {
     @autoreleasepool {
@@ -502,12 +547,13 @@ static void RunChecks(BOOL child, int cycles) {
     if (i % 50 == 0) Spin(0.01);
   }
   Spin(0.5);
-  COTGLResources(&gdi1, &user1, &handles1, &mem1);
+  Resources(window, &gdi1, &user1, &handles1, &mem1);
   snprintf(name, sizeof name, "%s: %d create/destroy cycles", kind, cycles);
   BOOL steady = gdi1 <= gdi0 + 10 && user1 <= user0 + 10 && handles1 <= handles0 + 20 && mem1 - mem0 < 50;
   Report(steady ? "PASS" : "FAIL", name,
-         [NSString stringWithFormat:@"GDI %lu->%lu, USER %lu->%lu, handles %lu->%lu, private %.0f->%.0f MB, %.1f ms/cycle",
-          gdi0, gdi1, user0, user1, handles0, handles1, mem0, mem1, ([NSDate timeIntervalSinceReferenceDate] - t0) * 1000 / cycles]);
+         [NSString stringWithFormat:@"%@, private %.0f->%.0f MB, %.1f ms/cycle",
+          [NSString stringWithFormat:[NSString stringWithUTF8String:kResourceFormat], gdi0, gdi1, user0, user1, handles0, handles1],
+          mem0, mem1, ([NSDate timeIntervalSinceReferenceDate] - t0) * 1000 / cycles]);
 
   [window close];
   [window release];
@@ -574,6 +620,9 @@ int main(int argc, char **argv) {
     else if (flag == "--only") delegate.only = [NSString stringWithUTF8String:argv[i + 1]];
   }
   NSApplication *app = [NSApplication sharedApplication];
+#if !defined(_WIN32)
+  COTGLX11SetDisplay([GSCurrentServer() serverDevice]);
+#endif
   [app setDelegate:delegate];
   [app run];
   [pool drain];

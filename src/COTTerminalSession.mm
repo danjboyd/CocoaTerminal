@@ -323,28 +323,44 @@ struct COTOutputBatch {
 // terminal queue (dispatch_sync); a block running there in the meantime used to [self retain] a session whose dealloc
 // had begun, and its main-thread block then ran on freed memory once dealloc finished.
 //
-// dispatch_async_f, not a block that captures the callback: libdispatch copies the blocks it's given with whichever
-// blocks runtime the program resolved first, and a toolchain that links libBlocksRuntime ahead of libobjc2 (gnustep-cli
-// 0.1.11 on Linux) then freed the captured callback early: the main thread called garbage (AIManager, 2026-11-20).
-// Here the only block copy is -copy, by the Objective-C runtime, and libdispatch gets a plain function and pointer.
+// Blocks here never rely on a copy to retain the Objective-C objects they capture. A toolchain that links
+// libBlocksRuntime ahead of libobjc2 (gnustep-cli 0.1.11 on Linux) binds every block's copy helper to
+// libBlocksRuntime's _Block_object_assign, which doesn't retain objects; a block that captured a string its caller then
+// released read freed memory (AIManager's suite, 2026-11-20). So objects a callback needs go in the delivery as its
+// payload, retained here and released after it runs (or when the session's gone), and libdispatch gets a plain
+// function and pointer rather than a block that captures one.
 namespace {
 struct COTMainDelivery {
   COTSessionHandle *handle;
-  void (^block)(COTTerminalSession *);
+  void (^block)(COTTerminalSession *, id);  // one of these two
+  void (^plain)(COTTerminalSession *);
+  id payload;
 };
 
 void COTRunMainDelivery(void *context) {
   COTMainDelivery *delivery = static_cast<COTMainDelivery *>(context);
   COTTerminalSession *session = delivery->handle->session;
-  if (session != nil) delivery->block(session);
+  if (session != nil) {
+    if (delivery->block != nil) delivery->block(session, delivery->payload);
+    else delivery->plain(session);
+  }
   [delivery->block release];
+  [delivery->plain release];
+  [delivery->payload release];
   [delivery->handle release];
   delete delivery;
 }
 }  // namespace
 
+// `block` may capture plain values but no objects: what it needs goes in `payload`, which it's handed.
+- (void)deliverOnMain:(void (^)(COTTerminalSession *session, id payload))block payload:(id)payload {
+  COTMainDelivery *delivery = new COTMainDelivery{[_handle retain], [block copy], nil, [payload retain]};
+  dispatch_async_f(dispatch_get_main_queue(), delivery, COTRunMainDelivery);
+}
+
+// For callbacks that capture only plain values (an exit status, an errno).
 - (void)deliverOnMain:(void (^)(COTTerminalSession *session))block {
-  COTMainDelivery *delivery = new COTMainDelivery{[_handle retain], [block copy]};
+  COTMainDelivery *delivery = new COTMainDelivery{[_handle retain], nil, [block copy], nil};
   dispatch_async_f(dispatch_get_main_queue(), delivery, COTRunMainDelivery);
 }
 
@@ -591,13 +607,14 @@ void COTRunMainDelivery(void *context) {
   // Through the session's handle, never a retain of self: this runs on the terminal queue, where -dealloc's own
   // teardown can reach it, and a retain of a session being freed outlived it (see -deliverOnMain:).
   NSString *owned = [message copy];
-  [self deliverOnMain:^(COTTerminalSession *session) {
+  [self deliverOnMain:^(COTTerminalSession *session, id payload) {
+    NSString *error = payload;
     id<COTTerminalDelegate> delegate = [session delegate];
-    if (owned && [delegate respondsToSelector:@selector(terminalSession:didEncounterTransportError:)])
-      [delegate terminalSession:session didEncounterTransportError:owned];
+    if (error && [delegate respondsToSelector:@selector(terminalSession:didEncounterTransportError:)])
+      [delegate terminalSession:session didEncounterTransportError:error];
     if ([delegate respondsToSelector:@selector(terminalSessionDidUpdateScreen:)])
       [delegate terminalSessionDidUpdateScreen:session];
-  }];
+  } payload:owned];
   [owned release];
 }
 
@@ -613,13 +630,20 @@ void COTRunMainDelivery(void *context) {
     dispatch_source_t source = fd >= 0 ? dispatch_source_create(DISPATCH_SOURCE_TYPE_WRITE, fd, 0, _terminalQueue) : NULL;
     if (!source) {
       [self recordTransportError:@"Terminal writable-readiness setup failed."];
-      COTWriterTarget *target = _writerTarget;
-      dispatch_async(_terminalQueue, ^{ [target.session closeWriterAfterReadinessFailure:_writerSourceGeneration]; });
+      // The target is retained here and released in the block, not left to the block's copy (see -deliverOnMain:).
+      COTWriterTarget *target = [_writerTarget retain];
+      const std::uint64_t failedGeneration = _writerSourceGeneration;
+      dispatch_async(_terminalQueue, ^{
+        [target.session closeWriterAfterReadinessFailure:failedGeneration];
+        [target release];
+      });
       return;
     }
     const std::uint64_t generation = _writerSourceGeneration;
-    COTWriterTarget *target = _writerTarget;
-    dispatch_source_set_event_handler(source, ^{ [target.session writerWritable:generation]; });
+    // The lifecycle (a C++ shared_ptr, copied by the block's own copy constructor) keeps the target alive for as long as
+    // the source can fire; a captured object wouldn't be retained by every blocks runtime (see -deliverOnMain:).
+    std::shared_ptr<COTLifecycleNative> native = *_native;
+    dispatch_source_set_event_handler(source, ^{ [native->target.session writerWritable:generation]; });
     _writeSource = source;
     _writeSourceResumed = NO;
   }
@@ -856,8 +880,11 @@ void COTRunMainDelivery(void *context) {
   return adopted;
 }
 - (void)scheduleWriterContinuation:(std::uint64_t)generation ticket:(std::uint64_t)ticket {
-  COTWriterTarget *target = _writerTarget;
-  dispatch_async(_terminalQueue, ^{ [target.session writerContinue:generation ticket:ticket]; });
+  COTWriterTarget *target = [_writerTarget retain];  // released in the block (see -deliverOnMain:)
+  dispatch_async(_terminalQueue, ^{
+    [target.session writerContinue:generation ticket:ticket];
+    [target release];
+  });
 }
 - (void)writerContinue:(std::uint64_t)generation ticket:(std::uint64_t)ticket {
   _writer->resume(generation, ticket);
@@ -922,18 +949,19 @@ void COTRunMainDelivery(void *context) {
   if (value == nil) {
     value = @"";
   }
-  NSString *ownedValue = [value copy];  // the copied block keeps its own reference
-  [self deliverOnMain:^(COTTerminalSession *session) {
+  NSString *ownedValue = [value copy];
+  [self deliverOnMain:^(COTTerminalSession *session, id payload) {
+    NSString *newTitle = payload;
     id<COTTerminalDelegate> delegate = [[session delegate] retain];
     if ([delegate respondsToSelector:@selector(terminalSession:didChangeTitle:)]) {
-      [delegate terminalSession:session didChangeTitle:ownedValue];
+      [delegate terminalSession:session didChangeTitle:newTitle];
     }
-    NSDictionary *userInfo = [NSDictionary dictionaryWithObject:ownedValue forKey:@"title"];
+    NSDictionary *userInfo = [NSDictionary dictionaryWithObject:newTitle forKey:@"title"];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"COTTerminalSessionTitleDidChangeNotification"
                                                         object:session
                                                       userInfo:userInfo];
     [delegate release];
-  }];
+  } payload:ownedValue];
   [ownedValue release];
 }
 
@@ -954,17 +982,18 @@ static NSDictionary *COTCommandDictionary(const cot::TerminalGrid::ShellCommand 
 }
 
 - (void)deliverFinishedCommand:(const cot::TerminalGrid::ShellCommand &)command {
-  NSDictionary *owned = [COTCommandDictionary(command) retain];  // the copied block keeps its own reference
-  [self deliverOnMain:^(COTTerminalSession *session) {
+  NSDictionary *owned = [COTCommandDictionary(command) retain];
+  [self deliverOnMain:^(COTTerminalSession *session, id payload) {
+    NSDictionary *finished = payload;
     id<COTTerminalDelegate> delegate = [[session delegate] retain];
     if ([delegate respondsToSelector:@selector(terminalSession:didFinishCommand:)]) {
-      [delegate terminalSession:session didFinishCommand:owned];
+      [delegate terminalSession:session didFinishCommand:finished];
     }
     [[NSNotificationCenter defaultCenter] postNotificationName:COTTerminalSessionCommandDidFinishNotification
                                                         object:session
-                                                      userInfo:owned];
+                                                      userInfo:finished];
     [delegate release];
-  }];
+  } payload:owned];
   [owned release];
 }
 
@@ -1024,21 +1053,22 @@ static NSDictionary *COTCommandDictionary(const cot::TerminalGrid::ShellCommand 
   // The pasteboard on the main thread, as AppKit wants: here on the terminal queue, GNUstep's Win32 pasteboard blocked
   // the queue, and the screen stopped updating.
   NSString *ownedText = [text copy];
-  [self deliverOnMain:^(COTTerminalSession *session) {
+  [self deliverOnMain:^(COTTerminalSession *session, id payload) {
+    NSString *written = payload;
     NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
     @try {
       [pasteboard declareTypes:[NSArray arrayWithObject:COTPasteboardTypeString] owner:nil];
-      [pasteboard setString:ownedText forType:COTPasteboardTypeString];
+      [pasteboard setString:written forType:COTPasteboardTypeString];
     } @catch (NSException *exception) {
       // Pasteboard server may be unavailable on headless GNUstep; the write
       // is still observable via lastClipboardWrite.
       (void)exception;
     }
-    NSDictionary *userInfo = [NSDictionary dictionaryWithObject:ownedText forKey:@"text"];
+    NSDictionary *userInfo = [NSDictionary dictionaryWithObject:written forKey:@"text"];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"COTTerminalSessionClipboardDidWriteNotification"
                                                         object:session
                                                       userInfo:userInfo];
-  }];
+  } payload:ownedText];
   [ownedText release];
 }
 

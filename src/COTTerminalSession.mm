@@ -322,15 +322,30 @@ struct COTOutputBatch {
 // Main-thread callbacks reach the session through its handle, never through a retain of self. -dealloc waits on the
 // terminal queue (dispatch_sync); a block running there in the meantime used to [self retain] a session whose dealloc
 // had begun, and its main-thread block then ran on freed memory once dealloc finished.
+//
+// dispatch_async_f, not a block that captures the callback: libdispatch copies the blocks it's given with whichever
+// blocks runtime the program resolved first, and a toolchain that links libBlocksRuntime ahead of libobjc2 (gnustep-cli
+// 0.1.11 on Linux) then freed the captured callback early: the main thread called garbage (AIManager, 2026-11-20).
+// Here the only block copy is -copy, by the Objective-C runtime, and libdispatch gets a plain function and pointer.
+namespace {
+struct COTMainDelivery {
+  COTSessionHandle *handle;
+  void (^block)(COTTerminalSession *);
+};
+
+void COTRunMainDelivery(void *context) {
+  COTMainDelivery *delivery = static_cast<COTMainDelivery *>(context);
+  COTTerminalSession *session = delivery->handle->session;
+  if (session != nil) delivery->block(session);
+  [delivery->block release];
+  [delivery->handle release];
+  delete delivery;
+}
+}  // namespace
+
 - (void)deliverOnMain:(void (^)(COTTerminalSession *session))block {
-  COTSessionHandle *handle = [_handle retain];
-  void (^copied)(COTTerminalSession *) = [block copy];
-  dispatch_async(dispatch_get_main_queue(), ^{
-    COTTerminalSession *session = handle->session;
-    if (session != nil) copied(session);
-    [copied release];
-    [handle release];
-  });
+  COTMainDelivery *delivery = new COTMainDelivery{[_handle retain], [block copy]};
+  dispatch_async_f(dispatch_get_main_queue(), delivery, COTRunMainDelivery);
 }
 
 - (void)publishSnapshotAndNotify:(BOOL)notify {

@@ -67,7 +67,9 @@ Differences from Linux worth knowing:
   `COCOATERMINAL_GL_PRESENT=window` or `=image` forces one; `performanceSnapshot`'s `glPresentation` says which is in
   use. Drawing straight into the window, nothing else in that window can be drawn over the terminal view (menus,
   pop-ups and other windows are fine): `bench/COTGLCheck.mm` checks what GNUstep's `NSOpenGLView` does.
-  `COCOATERMINAL_GL_CONTRAST` and `COCOATERMINAL_GL_GAMMA` tune text weight; `COCOATERMINAL_PERF_LOG=1` prints
+  `COCOATERMINAL_GL_CONTRAST` and `COCOATERMINAL_GL_GAMMA` tune text weight (grayscale defaults 0.25 and 1.0, LCD
+  0.5 and 1.2). With FreeType, grayscale hinting follows fontconfig's hintstyle as Cairo does, and
+  `COCOATERMINAL_GL_HINTING` (`none`, `slight`, `medium` or `full`) overrides it; `COCOATERMINAL_PERF_LOG=1` prints
   per-frame timings.
 - MSYS2's own programs (`cat`, `sh`) write to a console slowly (about 0.2 MB/s here, against about 2 MB/s for `type`
   in `cmd.exe`): that's the Cygwin console layer, whichever ConPTY is used.

@@ -210,7 +210,7 @@ void main() {
 
 // The blend is dst = colour * mask + dst * (1 - mask) per channel (dual-source). Enhanced contrast is the curve
 // DirectWrite applies, a * (k + 1) / (a * k + 1); light text on a dark background gets a stronger one and a gamma lift,
-// as stems otherwise look thin there. Both are tunable (COCOATERMINAL_GL_CONTRAST, COCOATERMINAL_GL_GAMMA).
+// as LCD stems otherwise look thin there. Both are tunable (COCOATERMINAL_GL_CONTRAST, COCOATERMINAL_GL_GAMMA).
 const char *kGlyphFragment = R"(#version 330 core
 in vec2 vTexture;
 in vec4 vColour;
@@ -271,9 +271,13 @@ public:
     _context = std::move(context);
     _source = std::move(glyphs);
     _clearType = clearType;
+    // Grayscale: a light curve and no gamma lift. The old defaults (1.0, 1.2) brightened every edge pixel of light text
+    // (a 20% edge became about 45%), so stems read three pixels wide with a glow, softer than Cairo's; 0.25 and 1.0
+    // match Cairo's share of full and part-covered pixels (AIManager's measurement, 2026-11-21). LCD keeps its own.
     if (const char *c = getenv("COCOATERMINAL_GL_CONTRAST")) _contrast = (float)atof(c);
-    else _contrast = clearType ? 0.5f : 1.0f;
+    else _contrast = clearType ? 0.5f : 0.25f;
     if (const char *g = getenv("COCOATERMINAL_GL_GAMMA")) _lightGamma = (float)atof(g);
+    else _lightGamma = clearType ? 1.2f : 1.0f;
     std::string missing;
     if (!_context->makeCurrent() || !_gl.load(*_context, &missing)) {
       *error = missing.empty() ? "can't make the OpenGL context current" : "OpenGL has no " + missing;

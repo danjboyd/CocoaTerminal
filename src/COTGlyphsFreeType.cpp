@@ -60,12 +60,19 @@ public:
       FcPatternAddString(pattern, FC_FAMILY, (const FcChar8 *)family.c_str());
       FcPatternAddInteger(pattern, FC_WEIGHT, weights[style]);
       FcPatternAddInteger(pattern, FC_SLANT, slants[style]);
-      _faces[style] = match(pattern, style == 0 ? &_regularFamily : nullptr);
+      _faces[style] = match(pattern, style == 0 ? &_regularFamily : nullptr, style == 0 ? &_grayHinting : nullptr);
       FcPatternDestroy(pattern);
     }
     if (!_faces[0]) {
       *error = "fontconfig found no font for " + family;
       return false;
+    }
+    // COCOATERMINAL_GL_HINTING overrides fontconfig: none, slight, medium or full.
+    if (const char *choice = getenv("COCOATERMINAL_GL_HINTING")) {
+      std::string name = choice;
+      if (name == "none") _grayHinting = FT_LOAD_NO_HINTING;
+      else if (name == "slight") _grayHinting = FT_LOAD_TARGET_LIGHT;
+      else if (name == "medium" || name == "full") _grayHinting = FT_LOAD_TARGET_NORMAL;
     }
     return true;
   }
@@ -131,7 +138,7 @@ public:
       FT_UInt index = FT_Get_Char_Index(face, codePoints[i]);
       FT_Int32 flags = FT_LOAD_DEFAULT;
       if (emoji && FT_HAS_COLOR(face)) flags |= FT_LOAD_COLOR;
-      else flags |= _clearType ? FT_LOAD_TARGET_LCD : FT_LOAD_TARGET_LIGHT;
+      else flags |= _clearType ? FT_LOAD_TARGET_LCD : _grayHinting;
       if (FT_Load_Glyph(face, index, flags) != 0) continue;
       FT_GlyphSlot slot = face->glyph;
       bool colourGlyph = (flags & FT_LOAD_COLOR) && slot->format == FT_GLYPH_FORMAT_BITMAP &&
@@ -196,7 +203,10 @@ public:
 
 private:
   // The face fontconfig matches, opened once per file and index.
-  FT_Face match(FcPattern *pattern, std::string *familyOut) {
+  // `hintingOut`: the FreeType load flags for grayscale text that fontconfig's settings for this font ask for (its
+  // hinting, hintstyle and autohint, as Cairo reads them): slight is FreeType's light hinting, which snaps only
+  // vertically; medium and full snap stems horizontally too.
+  FT_Face match(FcPattern *pattern, std::string *familyOut, FT_Int32 *hintingOut = nullptr) {
     FcConfigSubstitute(nullptr, pattern, FcMatchPattern);
     FcDefaultSubstitute(pattern);
     FcResult result;
@@ -206,6 +216,15 @@ private:
     if (familyOut) {
       FcChar8 *name = nullptr;
       if (FcPatternGetString(found, FC_FAMILY, 0, &name) == FcResultMatch) *familyOut = (const char *)name;
+    }
+    if (hintingOut) {
+      FcBool hinting = FcTrue, autohint = FcFalse;
+      int style = FC_HINT_SLIGHT;
+      FcPatternGetBool(found, FC_HINTING, 0, &hinting);
+      FcPatternGetBool(found, FC_AUTOHINT, 0, &autohint);
+      FcPatternGetInteger(found, FC_HINT_STYLE, 0, &style);
+      if (!hinting || style == FC_HINT_NONE) *hintingOut = FT_LOAD_NO_HINTING;
+      else *hintingOut = (style == FC_HINT_SLIGHT ? FT_LOAD_TARGET_LIGHT : FT_LOAD_TARGET_NORMAL) | (autohint ? FT_LOAD_FORCE_AUTOHINT : 0);
     }
     FcPatternDestroy(found);
     return face;
@@ -349,6 +368,7 @@ private:
   float _pixelSize = 13;
   float _lastAdvance = 0;
   bool _clearType = true;
+  FT_Int32 _grayHinting = FT_LOAD_TARGET_LIGHT;  // from fontconfig (see -match), or COCOATERMINAL_GL_HINTING
 };
 
 }  // namespace
